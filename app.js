@@ -57,6 +57,22 @@ async function doLogin(email, password) {
     }
 }
 
+/** Firebase Auth: sign in with Google */
+async function doGoogleLogin() {
+    try {
+        await auth.signInWithPopup(googleProvider);
+        return { success: true };
+    } catch (e) {
+        console.error('Google login error:', e);
+        let msg = 'Erro ao entrar com Google.';
+        if (e.code === 'auth/popup-closed-by-user') msg = 'Login cancelado.';
+        else if (e.code === 'auth/popup-blocked') msg = 'Pop-up bloqueado pelo navegador. Permita pop-ups e tente novamente.';
+        else if (e.code === 'auth/network-request-failed') msg = 'Sem conexão com a internet.';
+        else if (e.code === 'auth/cancelled-popup-request') return { success: false, message: '' };
+        return { success: false, message: msg };
+    }
+}
+
 /** Firebase Auth: sign out */
 function logout() {
     auth.signOut();
@@ -2336,6 +2352,17 @@ function init() {
     });
     document.getElementById('login-email').addEventListener('keydown', (e) => {
         if (e.key === 'Enter') document.getElementById('login-password').focus();
+    });
+
+    // Google login button
+    document.getElementById('btn-google-login').addEventListener('click', async () => {
+        const errorEl = document.getElementById('login-error');
+        errorEl.classList.add('hidden');
+        const result = await doGoogleLogin();
+        if (!result.success && result.message) {
+            errorEl.textContent = result.message;
+            errorEl.classList.remove('hidden');
+        }
     });
 
     // Logout button

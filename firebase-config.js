@@ -68,3 +68,6 @@ db.enablePersistence({ synchronizeTabs: true }).catch(err => {
 
 // Configurar idioma do Firebase Auth para português
 auth.languageCode = 'pt';
+
+// Google Auth Provider
+const googleProvider = new firebase.auth.GoogleAuthProvider();
