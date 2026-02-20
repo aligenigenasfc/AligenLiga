@@ -328,7 +328,7 @@ function showToast(msg) {
 }
 
 // ───── VIEW MANAGEMENT ─────
-let currentView = 'players';
+let currentView = 'stats';
 
 function switchView(viewName) {
     // Block admin view for non-admins
