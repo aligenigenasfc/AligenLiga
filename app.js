@@ -2385,7 +2385,7 @@ function init() {
                 } else {
                     // Profile doc missing — auto-create as first user = admin, otherwise user
                     const snap = await db.collection('users').get();
-                    const autoRole = snap.size <= 1 ? 'admin' : 'user';
+                    const autoRole = snap.size === 0 ? 'admin' : 'user';
                     const profile = {
                         email: firebaseUser.email,
                         displayName: firebaseUser.displayName || firebaseUser.email.split('@')[0],
