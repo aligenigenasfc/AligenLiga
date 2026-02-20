@@ -5,16 +5,25 @@
 
 // ───── CONSTANTS ─────
 const STORAGE_KEY = 'torneio_futebol'; // localStorage fallback
-const TEAM_COLORS = [
-    { name: 'Verde', hex: '#4CAF50' },
-    { name: 'Amarelo', hex: '#FFC107' },
-    { name: 'Azul', hex: '#2196F3' },
+// Times padrão com imagens de mascote
+const DEFAULT_TEAMS = [
+    { name: 'Verde',      hex: '#4CAF50', imgLeft: 'teams/verde-left.png',      imgRight: 'teams/verde-right.png' },
+    { name: 'Amarelo',    hex: '#FFC107', imgLeft: 'teams/amarelo-left.png',    imgRight: 'teams/amarelo-right.png' },
+    { name: 'Azul Claro', hex: '#81D4FA', imgLeft: 'teams/azulclaro-left.png',  imgRight: 'teams/azulclaro-right.png' },
+    { name: 'Azul SSW',   hex: '#1565C0', imgLeft: 'teams/azulssw-left.png',    imgRight: 'teams/azulssw-right.png' },
+];
+
+// Cores extras para times personalizados
+const EXTRA_COLORS = [
     { name: 'Vermelho', hex: '#f44336' },
     { name: 'Branco', hex: '#e0e0e0' },
     { name: 'Laranja', hex: '#FF9800' },
     { name: 'Roxo', hex: '#9C27B0' },
     { name: 'Rosa', hex: '#E91E63' },
 ];
+
+// All available colors (for color picker)
+const ALL_COLORS = [...DEFAULT_TEAMS.map(t => ({ name: t.name, hex: t.hex })), ...EXTRA_COLORS];
 const TOTAL_ROUNDS = 9;
 const WIN_PTS = 3;
 const DRAW_PTS = 1;
@@ -424,9 +433,9 @@ function createTournament() {
         createdAt: new Date().toISOString(),
         status: 'setup', // setup → scheduling → in_progress → finished
         teams: [
-            { id: uid(), name: 'Time 1', color: TEAM_COLORS[0].hex, players: [] },
-            { id: uid(), name: 'Time 2', color: TEAM_COLORS[1].hex, players: [] },
-            { id: uid(), name: 'Time 3', color: TEAM_COLORS[2].hex, players: [] },
+            { id: uid(), name: DEFAULT_TEAMS[0].name, color: DEFAULT_TEAMS[0].hex, imgLeft: DEFAULT_TEAMS[0].imgLeft, imgRight: DEFAULT_TEAMS[0].imgRight, players: [] },
+            { id: uid(), name: DEFAULT_TEAMS[1].name, color: DEFAULT_TEAMS[1].hex, imgLeft: DEFAULT_TEAMS[1].imgLeft, imgRight: DEFAULT_TEAMS[1].imgRight, players: [] },
+            { id: uid(), name: DEFAULT_TEAMS[2].name, color: DEFAULT_TEAMS[2].hex, imgLeft: DEFAULT_TEAMS[2].imgLeft, imgRight: DEFAULT_TEAMS[2].imgRight, players: [] },
         ],
         matches: [],
         // scheduling state
@@ -467,6 +476,26 @@ function setTeamColor(teamId, color) {
     const team = getTeam(teamId);
     if (team) {
         team.color = color;
+        // Check if this color matches a preset team and update images
+        const preset = DEFAULT_TEAMS.find(t => t.hex === color);
+        if (preset) {
+            team.imgLeft = preset.imgLeft;
+            team.imgRight = preset.imgRight;
+        }
+        saveState();
+        renderTournament();
+    }
+}
+
+function setTeamPreset(teamId, presetIndex) {
+    if (!canChangeTeams()) { showToast('Sem permissão!'); return; }
+    const team = getTeam(teamId);
+    const preset = DEFAULT_TEAMS[presetIndex];
+    if (team && preset) {
+        team.name = preset.name;
+        team.color = preset.hex;
+        team.imgLeft = preset.imgLeft;
+        team.imgRight = preset.imgRight;
         saveState();
         renderTournament();
     }
@@ -611,7 +640,7 @@ function renderTournamentSetup(container) {
         ${t.teams.map((team, i) => `
             <div class="card team-card" style="border-left-color:${team.color}">
                 <div class="team-header">
-                    <div class="team-color-dot" style="background:${team.color}"></div>
+                    ${team.imgRight ? `<img src="${team.imgRight}" alt="${esc(team.name)}" class="team-card-avatar">` : `<div class="team-color-dot" style="background:${team.color}"></div>`}
                     ${canChangeName ? `
                     <input type="text" class="team-name-input" value="${esc(team.name)}"
                         onchange="setTeamName('${team.id}', this.value)"
@@ -619,8 +648,19 @@ function renderTournamentSetup(container) {
                     ` : `<span style="font-weight:600;">${esc(team.name)}</span>`}
                 </div>
                 ${canChangeName ? `
+                <div class="team-preset-selector">
+                    <span style="font-size:0.75rem;color:var(--text-muted);">Time:</span>
+                    ${DEFAULT_TEAMS.map((dt, dtIdx) => `
+                        <button class="team-preset-btn ${team.color === dt.hex ? 'active' : ''}"
+                                style="border-color:${dt.hex}"
+                                onclick="setTeamPreset('${team.id}', ${dtIdx})"
+                                title="${dt.name}">
+                            <img src="${dt.imgRight}" alt="${dt.name}" class="team-preset-img">
+                        </button>
+                    `).join('')}
+                </div>
                 <div class="color-options">
-                    ${TEAM_COLORS.map(c => `
+                    ${ALL_COLORS.map(c => `
                         <div class="color-option ${team.color === c.hex ? 'selected' : ''}"
                              style="background:${c.hex}"
                              onclick="setTeamColor('${team.id}', '${c.hex}')"
@@ -1111,7 +1151,7 @@ function renderMatch1Selection(container) {
             <div class="team-select-grid" id="team-select-grid">
                 ${t.teams.map(team => `
                     <button class="team-select-btn" data-team-id="${team.id}" onclick="toggleMatch1Team('${team.id}')">
-                        <span class="team-color-indicator" style="background:${team.color}"></span>
+                        ${team.imgRight ? `<img src="${team.imgRight}" alt="${esc(team.name)}" class="team-select-img">` : `<span class="team-color-indicator" style="background:${team.color}"></span>`}
                         ${esc(team.name)}
                     </button>
                 `).join('')}
@@ -1170,6 +1210,7 @@ function renderActiveMatch(match, idx) {
 
             <div class="score-display">
                 <div class="score-team">
+                    ${homeTeam.imgLeft ? `<img src="${homeTeam.imgLeft}" alt="${esc(homeTeam.name)}" class="score-team-img">` : ''}
                     <div class="score-team-name">
                         <span class="score-team-color" style="background:${homeTeam.color}"></span>
                         ${esc(homeTeam.name)}
@@ -1185,6 +1226,7 @@ function renderActiveMatch(match, idx) {
                 <div class="score-vs">×</div>
 
                 <div class="score-team">
+                    ${awayTeam.imgRight ? `<img src="${awayTeam.imgRight}" alt="${esc(awayTeam.name)}" class="score-team-img">` : ''}
                     <div class="score-team-name">
                         <span class="score-team-color" style="background:${awayTeam.color}"></span>
                         ${esc(awayTeam.name)}
@@ -1272,7 +1314,7 @@ function renderMatchList() {
                 <div class="mh-teams">
                     <span class="mh-team-name mh-home ${winnerSide === 'home' ? 'mh-winner' : ''}"
                           style="${winnerSide === 'home' ? 'color:var(--accent)' : ''}">
-                        <span class="score-team-color" style="background:${homeTeam.color};display:inline-block;vertical-align:middle;margin-right:4px;"></span>
+                        ${homeTeam.imgLeft ? `<img src="${homeTeam.imgLeft}" alt="" class="mh-team-img">` : `<span class="score-team-color" style="background:${homeTeam.color};display:inline-block;vertical-align:middle;margin-right:4px;"></span>`}
                         ${esc(homeTeam.name)}
                     </span>
                     <span class="mh-score">
@@ -1281,7 +1323,7 @@ function renderMatchList() {
                     <span class="mh-team-name mh-away ${winnerSide === 'away' ? 'mh-winner' : ''}"
                           style="${winnerSide === 'away' ? 'color:var(--accent)' : ''}">
                         ${esc(awayTeam.name)}
-                        <span class="score-team-color" style="background:${awayTeam.color};display:inline-block;vertical-align:middle;margin-left:4px;"></span>
+                        ${awayTeam.imgRight ? `<img src="${awayTeam.imgRight}" alt="" class="mh-team-img">` : `<span class="score-team-color" style="background:${awayTeam.color};display:inline-block;vertical-align:middle;margin-left:4px;"></span>`}
                     </span>
                 </div>
             </div>`;
