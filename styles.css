@@ -75,6 +75,16 @@ body {
     font-size: 1.2rem;
     font-weight: 800;
     letter-spacing: -0.5px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.header-logo-img {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    object-fit: cover;
 }
 
 /* ═══ MAIN CONTENT ═══ */
@@ -1067,6 +1077,13 @@ input::placeholder { color: var(--text-muted); }
 .login-logo {
     font-size: 3rem;
     margin-bottom: 8px;
+}
+
+.login-logo-img {
+    width: 80px;
+    height: 80px;
+    border-radius: 50%;
+    object-fit: cover;
 }
 
 .login-title {
