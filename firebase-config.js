@@ -39,12 +39,12 @@
 //
 
 const firebaseConfig = {
-    apiKey: "COLE_SUA_API_KEY_AQUI",
-    authDomain: "SEU_PROJETO.firebaseapp.com",
-    projectId: "SEU_PROJETO",
-    storageBucket: "SEU_PROJETO.appspot.com",
-    messagingSenderId: "000000000000",
-    appId: "1:000000000000:web:0000000000000000000000"
+    apiKey: "AIzaSyB7OVWdD7Rgw8AqWFKy2_xv7P9zbhLRd5E",
+    authDomain: "aligenigenasfc-aligen-liga.firebaseapp.com",
+    projectId: "aligenigenasfc-aligen-liga",
+    storageBucket: "aligenigenasfc-aligen-liga.firebasestorage.app",
+    messagingSenderId: "114740949394",
+    appId: "1:114740949394:web:ea1124f2a558b5cf38114b"
 };
 
 // ═══════════════════════════════════════════════════════
