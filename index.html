@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>⚽ AlienígenasFC</title>
+
+    <!-- PWA -->
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#0f1923">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="AlienígenasFC">
+    <link rel="apple-touch-icon" href="icons/icon-192.png">
+    <meta name="description" content="Torneio semanal de futebol amador — Aligen Liga">
+
+    <!-- Styles & Fonts -->
+    <link rel="stylesheet" href="styles.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+
+    <!-- Firebase SDK (compat for global script usage) -->
+    <script src="https://www.gstatic.com/firebasejs/10.14.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.14.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.14.0/firebase-firestore-compat.js"></script>
+</head>
+<body>
+    <div id="app">
+        <!-- ═══════════════ LOGIN SCREEN ═══════════════ -->
+        <div id="login-screen" class="login-screen">
+            <div class="login-card">
+                <div class="login-logo">⚽</div>
+                <h1 class="login-title">AlienígenasFC</h1>
+                <p class="login-subtitle">Faça login para continuar</p>
+                <div class="input-group" style="margin-bottom:12px;">
+                    <input type="email" id="login-email" placeholder="E-mail" maxlength="60" autocomplete="email">
+                </div>
+                <div class="input-group" style="margin-bottom:16px;">
+                    <input type="password" id="login-password" placeholder="Senha" maxlength="50" autocomplete="current-password">
+                </div>
+                <button id="btn-login" class="btn btn-primary btn-block btn-lg">Entrar</button>
+                <div id="login-error" class="login-error hidden"></div>
+            </div>
+        </div>
+
+        <!-- ═══════════════ HEADER ═══════════════ -->
+        <header class="app-header hidden" id="app-header">
+            <h1>⚽ AlienígenasFC</h1>
+            <div class="header-user-area">
+                <span id="header-user-role" class="user-role-badge"></span>
+                <button id="btn-logout" class="btn-logout" title="Sair">🚪</button>
+            </div>
+        </header>
+
+        <!-- ═══════════════ MAIN CONTENT ═══════════════ -->
+        <main id="main-content" class="hidden">
+
+            <!-- VIEW: Jogadores -->
+            <section id="view-players" class="view active">
+                <div class="view-header">
+                    <h2>👥 Jogadores</h2>
+                    <p class="view-subtitle">Cadastre os jogadores que participam dos torneios</p>
+                </div>
+                <div id="player-add-area" class="input-group">
+                    <input type="text" id="input-player-name" placeholder="Nome do jogador" maxlength="30" autocomplete="off">
+                    <button id="btn-add-player" class="btn btn-primary">Adicionar</button>
+                </div>
+                <div id="player-count" class="count-badge"></div>
+                <ul id="player-list" class="item-list"></ul>
+            </section>
+
+            <!-- VIEW: Admin / Usuários -->
+            <section id="view-admin" class="view">
+                <div class="view-header">
+                    <h2>🔐 Administração</h2>
+                    <p class="view-subtitle">Gerenciamento de usuários e permissões</p>
+                </div>
+                <div id="admin-content"></div>
+            </section>
+
+            <!-- VIEW: Torneio (Setup) -->
+            <section id="view-tournament" class="view">
+                <div id="tournament-content"></div>
+            </section>
+
+            <!-- VIEW: Partidas -->
+            <section id="view-matches" class="view">
+                <div id="matches-content"></div>
+            </section>
+
+            <!-- VIEW: Classificação -->
+            <section id="view-standings" class="view">
+                <div class="view-header">
+                    <h2>📊 Classificação</h2>
+                </div>
+                <div id="standings-content"></div>
+            </section>
+
+            <!-- VIEW: Estatísticas -->
+            <section id="view-stats" class="view">
+                <div class="view-header">
+                    <h2>🥇 Ranking Aligen Liga</h2>
+                    <p class="view-subtitle">Stats do torneio atual e histórico geral</p>
+                </div>
+                <div id="stats-content"></div>
+            </section>
+        </main>
+
+        <!-- ═══════════════ BOTTOM NAV ═══════════════ -->
+        <nav class="bottom-nav hidden" id="bottom-nav">
+            <button class="nav-btn active" data-view="players">
+                <span class="nav-icon">👥</span>
+                <span class="nav-label">Jogadores</span>
+            </button>
+            <button class="nav-btn" data-view="tournament">
+                <span class="nav-icon">🏆</span>
+                <span class="nav-label">Torneio</span>
+            </button>
+            <button class="nav-btn" data-view="matches">
+                <span class="nav-icon">⚽</span>
+                <span class="nav-label">Partidas</span>
+            </button>
+            <button class="nav-btn" data-view="standings">
+                <span class="nav-icon">📊</span>
+                <span class="nav-label">Tabela</span>
+            </button>
+            <button class="nav-btn" data-view="stats">
+                <span class="nav-icon">🥇</span>
+                <span class="nav-label">Stats</span>
+            </button>
+            <button class="nav-btn nav-btn-admin" data-view="admin" id="nav-admin-btn">
+                <span class="nav-icon">🔐</span>
+                <span class="nav-label">Admin</span>
+            </button>
+        </nav>
+
+        <!-- ═══════════════ MODAL ═══════════════ -->
+        <div id="modal-overlay" class="modal-overlay hidden">
+            <div id="modal-content" class="modal-content"></div>
+        </div>
+
+        <!-- ═══════════════ CHAMPION OVERLAY ═══════════════ -->
+        <div id="champion-overlay" class="champion-overlay hidden">
+            <canvas id="confetti-canvas"></canvas>
+            <div id="champion-content" class="champion-content"></div>
+        </div>
+    </div>
+
+    <script src="firebase-config.js"></script>
+    <script src="app.js"></script>
+
+    <!-- Service Worker Registration -->
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('./sw.js')
+                    .then(reg => console.log('SW registrado:', reg.scope))
+                    .catch(err => console.warn('SW falhou:', err));
+            });
+        }
+    </script>
+</body>
+</html>

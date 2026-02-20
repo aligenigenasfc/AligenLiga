@@ -1,0 +1,48 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Helper functions ──
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function getUserRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && getUserRole() == 'admin';
+    }
+
+    function isCaptainOrAdmin() {
+      return isSignedIn() && getUserRole() in ['admin', 'captain'];
+    }
+
+    // ── User profiles ──
+    // Anyone authenticated can read all users (needed for admin panel)
+    // A user can create their own profile on first registration
+    // Only admins can update/delete user profiles
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && request.auth.uid == userId;
+      allow update, delete: if isAdmin();
+    }
+
+    // ── App data (players, tournament) ──
+    // All authenticated users can read
+    // Captains and admins can write
+    match /appData/{docId} {
+      allow read: if isSignedIn();
+      allow write: if isCaptainOrAdmin();
+    }
+
+    // ── Tournament history ──
+    // All authenticated users can read
+    // Captains and admins can write (saving finished tournaments)
+    match /history/{docId} {
+      allow read: if isSignedIn();
+      allow write: if isCaptainOrAdmin();
+    }
+  }
+}
