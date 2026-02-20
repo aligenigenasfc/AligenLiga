@@ -9,8 +9,8 @@ const STORAGE_KEY = 'torneio_futebol'; // localStorage fallback
 const DEFAULT_TEAMS = [
     { name: 'Verde',      hex: '#4CAF50', imgLeft: 'teams/verde-left.png',      imgRight: 'teams/verde-right.png' },
     { name: 'Amarelo',    hex: '#FFC107', imgLeft: 'teams/amarelo-left.png',    imgRight: 'teams/amarelo-right.png' },
-    { name: 'Azul Claro', hex: '#81D4FA', imgLeft: 'teams/azulclaro-left.png',  imgRight: 'teams/azulclaro-right.png' },
     { name: 'Azul SSW',   hex: '#1565C0', imgLeft: 'teams/azulssw-left.png',    imgRight: 'teams/azulssw-right.png' },
+    { name: 'Azul Claro', hex: '#81D4FA', imgLeft: 'teams/azulclaro-left.png',  imgRight: 'teams/azulclaro-right.png' },
 ];
 
 // Cores extras para times personalizados
