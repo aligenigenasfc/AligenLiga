@@ -29,6 +29,9 @@ const WIN_PTS = 3;
 const DRAW_PTS = 1;
 const LOSS_PTS = 0;
 
+// ───── MATCH TIMER ─────
+let matchTimerInterval = null;
+
 // ───── ROLE DEFINITIONS ─────
 const ROLES = {
     admin:   { label: 'Admin Geral', icon: '👑' },
@@ -67,18 +70,42 @@ async function doLogin(email, password) {
 }
 
 /** Firebase Auth: sign in with Google */
+function getGoogleAuthErrorMessage(e) {
+    const code = e?.code || '';
+    const host = window.location.hostname || 'domínio atual';
+
+    if (code === 'auth/popup-closed-by-user') return 'Login cancelado.';
+    if (code === 'auth/network-request-failed') return 'Sem conexão com a internet.';
+    if (code === 'auth/operation-not-allowed') return 'Login com Google não está ativado no Firebase. Ative em Authentication > Sign-in method > Google.';
+    if (code === 'auth/unauthorized-domain') return `Domínio não autorizado no Firebase: ${host}. Adicione este domínio em Authentication > Settings > Authorized domains.`;
+    if (code === 'auth/invalid-api-key') return 'Configuração Firebase inválida (API Key). Verifique o arquivo firebase-config.js.';
+    if (code === 'auth/app-not-authorized') return 'Aplicação não autorizada para autenticação Google. Verifique OAuth e domínios autorizados no Firebase.';
+
+    return 'Erro ao entrar com Google.';
+}
+
 async function doGoogleLogin() {
     try {
         await auth.signInWithPopup(googleProvider);
         return { success: true };
     } catch (e) {
         console.error('Google login error:', e);
-        let msg = 'Erro ao entrar com Google.';
-        if (e.code === 'auth/popup-closed-by-user') msg = 'Login cancelado.';
-        else if (e.code === 'auth/popup-blocked') msg = 'Pop-up bloqueado pelo navegador. Permita pop-ups e tente novamente.';
-        else if (e.code === 'auth/network-request-failed') msg = 'Sem conexão com a internet.';
-        else if (e.code === 'auth/cancelled-popup-request') return { success: false, message: '' };
-        return { success: false, message: msg };
+
+        // Silently ignore duplicate popup requests
+        if (e.code === 'auth/cancelled-popup-request') return { success: false, message: '' };
+
+        // Fallback for popup issues (common on mobile and strict browsers)
+        if (e.code === 'auth/popup-blocked' || e.code === 'auth/web-storage-unsupported') {
+            try {
+                await auth.signInWithRedirect(googleProvider);
+                return { success: true, redirected: true };
+            } catch (redirectErr) {
+                console.error('Google redirect login error:', redirectErr);
+                return { success: false, message: getGoogleAuthErrorMessage(redirectErr) };
+            }
+        }
+
+        return { success: false, message: getGoogleAuthErrorMessage(e) };
     }
 }
 
@@ -174,6 +201,12 @@ async function loadState() {
         const stateDoc = await db.collection('appData').doc('state').get();
         if (stateDoc.exists) {
             state.players = stateDoc.data().players || [];
+            // migration: ensure isGoalkeeper field
+            state.players.forEach(p => {
+                if (p.isGoalkeeper === undefined) {
+                    p.isGoalkeeper = false;
+                }
+            });
         }
 
         // Tournament
@@ -185,6 +218,19 @@ async function loadState() {
                 state.currentTournament.matches.forEach(m => {
                     if (!m.homeGoalkeeper) m.homeGoalkeeper = null;
                     if (!m.awayGoalkeeper) m.awayGoalkeeper = null;
+                    // migration: ensure timer fields
+                    if (m.timerDuration === undefined) m.timerDuration = 600; // 10 minutes
+                    if (m.timerRemaining === undefined) m.timerRemaining = 600;
+                    if (m.timerRunning === undefined) m.timerRunning = false;
+                    if (m.timerStartedAt === undefined) m.timerStartedAt = null;
+                });
+            }
+            // migration: ensure designatedGoalkeeperId field in teams
+            if (state.currentTournament?.teams) {
+                state.currentTournament.teams.forEach(team => {
+                    if (team.designatedGoalkeeperId === undefined) {
+                        team.designatedGoalkeeperId = null;
+                    }
                 });
             }
         } else {
@@ -374,7 +420,7 @@ function addPlayer(name) {
         showToast('Jogador já cadastrado!');
         return;
     }
-    state.players.push({ id: uid(), name });
+    state.players.push({ id: uid(), name, isGoalkeeper: false });
     saveState();
     renderPlayers();
 }
@@ -395,6 +441,16 @@ function removePlayer(id) {
     renderPlayers();
 }
 
+function togglePlayerGoalkeeper(id) {
+    if (!canManagePlayers()) { showToast('Sem permissão!'); return; }
+    const player = state.players.find(p => p.id === id);
+    if (player) {
+        player.isGoalkeeper = !player.isGoalkeeper;
+        saveState();
+        renderPlayers();
+    }
+}
+
 function renderPlayers() {
     const countEl = document.getElementById('player-count');
     const listEl = document.getElementById('player-list');
@@ -413,8 +469,13 @@ function renderPlayers() {
         .sort((a, b) => a.name.localeCompare(b.name))
         .map(p => `
             <li>
-                <span class="player-name">${esc(p.name)}</span>
-                ${canManagePlayers() ? `<button class="btn-remove" onclick="removePlayer('${p.id}')" title="Remover">✕</button>` : ''}
+                <span class="player-name">${esc(p.name)} ${p.isGoalkeeper ? '🧤' : ''}</span>
+                ${canManagePlayers() ? `
+                    <div style="display:flex;gap:6px;align-items:center;">
+                        <button class="btn-toggle-gk" onclick="togglePlayerGoalkeeper('${p.id}')" title="${p.isGoalkeeper ? 'Remover marca de goleiro' : 'Marcar como goleiro'}" style="padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:${p.isGoalkeeper ? 'var(--accent)' : 'var(--bg-input)'};color:${p.isGoalkeeper ? '#fff' : 'var(--text-secondary)'};font-size:0.8rem;cursor:pointer;">🧤</button>
+                        <button class="btn-remove" onclick="removePlayer('${p.id}')" title="Remover">✕</button>
+                    </div>
+                ` : ''}
             </li>
         `).join('');
 }
@@ -433,9 +494,9 @@ function createTournament() {
         createdAt: new Date().toISOString(),
         status: 'setup', // setup → scheduling → in_progress → finished
         teams: [
-            { id: uid(), name: DEFAULT_TEAMS[0].name, color: DEFAULT_TEAMS[0].hex, imgLeft: DEFAULT_TEAMS[0].imgLeft, imgRight: DEFAULT_TEAMS[0].imgRight, players: [] },
-            { id: uid(), name: DEFAULT_TEAMS[1].name, color: DEFAULT_TEAMS[1].hex, imgLeft: DEFAULT_TEAMS[1].imgLeft, imgRight: DEFAULT_TEAMS[1].imgRight, players: [] },
-            { id: uid(), name: DEFAULT_TEAMS[2].name, color: DEFAULT_TEAMS[2].hex, imgLeft: DEFAULT_TEAMS[2].imgLeft, imgRight: DEFAULT_TEAMS[2].imgRight, players: [] },
+            { id: uid(), name: DEFAULT_TEAMS[0].name, color: DEFAULT_TEAMS[0].hex, imgLeft: DEFAULT_TEAMS[0].imgLeft, imgRight: DEFAULT_TEAMS[0].imgRight, players: [], designatedGoalkeeperId: null },
+            { id: uid(), name: DEFAULT_TEAMS[1].name, color: DEFAULT_TEAMS[1].hex, imgLeft: DEFAULT_TEAMS[1].imgLeft, imgRight: DEFAULT_TEAMS[1].imgRight, players: [], designatedGoalkeeperId: null },
+            { id: uid(), name: DEFAULT_TEAMS[2].name, color: DEFAULT_TEAMS[2].hex, imgLeft: DEFAULT_TEAMS[2].imgLeft, imgRight: DEFAULT_TEAMS[2].imgRight, players: [], designatedGoalkeeperId: null },
         ],
         matches: [],
         // scheduling state
@@ -523,6 +584,20 @@ function removePlayerFromTeam(playerId, teamId) {
     const team = getTeam(teamId);
     if (team) {
         team.players = team.players.filter(id => id !== playerId);
+        // If the removed player was the designated goalkeeper, clear it
+        if (team.designatedGoalkeeperId === playerId) {
+            team.designatedGoalkeeperId = null;
+        }
+        saveState();
+        renderTournament();
+    }
+}
+
+function setTeamDesignatedGoalkeeper(teamId, playerId) {
+    if (!canAssignPlayers()) { showToast('Sem permissão!'); return; }
+    const team = getTeam(teamId);
+    if (team) {
+        team.designatedGoalkeeperId = playerId || null;
         saveState();
         renderTournament();
     }
@@ -674,11 +749,23 @@ function renderTournamentSetup(container) {
                     ${team.players.length === 0 ? '<li style="color:var(--text-muted);font-style:italic;">Nenhum jogador</li>' : ''}
                     ${team.players.map(pid => `
                         <li>
-                            <span>${esc(getPlayerName(pid))}</span>
+                            <span>${esc(getPlayerName(pid))} ${team.designatedGoalkeeperId === pid ? '🧤' : ''}</span>
                             ${canEdit ? `<button class="btn-remove" onclick="removePlayerFromTeam('${pid}','${team.id}')" title="Remover">✕</button>` : ''}
                         </li>
                     `).join('')}
                 </ul>
+                ${canEdit && team.players.length > 0 ? `
+                    <div style="margin-top:8px;">
+                        <select onchange="setTeamDesignatedGoalkeeper('${team.id}', this.value)" style="font-size:0.85rem;width:100%;">
+                            <option value="">🧤 Designar goleiro do time...</option>
+                            ${team.players.map(pid => `
+                                <option value="${pid}" ${team.designatedGoalkeeperId === pid ? 'selected' : ''}>
+                                    🧤 ${esc(getPlayerName(pid))}
+                                </option>
+                            `).join('')}
+                        </select>
+                    </div>
+                ` : ''}
                 ${canEdit && (unassigned.length > 0 || team.players.length === 0) ? `
                     <div style="margin-top:8px;">
                         <select onchange="if(this.value)assignPlayerToTeam(this.value,'${team.id}');this.value='';">
@@ -746,7 +833,11 @@ function selectMatch1Teams(homeId, awayId) {
         homeGoalkeeper: null,
         awayGoalkeeper: null,
         goals: [],
-        status: 'in_progress'
+        status: 'in_progress',
+        timerDuration: 600, // 10 minutes in seconds
+        timerRemaining: 600,
+        timerRunning: false,
+        timerStartedAt: null
     }];
     t.status = 'in_progress';
     saveState();
@@ -766,9 +857,23 @@ function addGoalToMatch(teamId) {
     const team = getTeam(teamId);
     if (!team) return;
 
-    const playersList = team.players.map(pid => `
-        <li onclick="recordGoal('${teamId}', '${pid}')">${esc(getPlayerName(pid))}</li>
-    `).join('');
+    // Get goalkeeper for this team in this match
+    const goalkeeperIdForTeam = teamId === match.homeTeamId ? match.homeGoalkeeper : match.awayGoalkeeper;
+
+    // Build player list with unique IDs to avoid duplicates
+    const playerSet = new Set(team.players);
+    if (goalkeeperIdForTeam && !playerSet.has(goalkeeperIdForTeam)) {
+        playerSet.add(goalkeeperIdForTeam);
+    }
+
+    const playersList = Array.from(playerSet).map(pid => {
+        const isGoalkeeper = pid === goalkeeperIdForTeam;
+        const playerName = getPlayerName(pid);
+        return `
+        <li onclick="recordGoal('${teamId}', '${pid}')" style="${isGoalkeeper ? 'background:var(--bg-input);' : ''}">
+            ${esc(playerName)} ${isGoalkeeper ? '🧤' : ''}
+        </li>
+    `}).join('');
 
     showModal(`
         <div class="modal-title">⚽ Quem marcou o gol?</div>
@@ -818,6 +923,171 @@ function removeGoal(matchIdx, goalIdx) {
     renderMatches();
 }
 
+// ── Match Timer Management ──
+
+function resumeMatchTimerIfNeeded() {
+    const t = state.currentTournament;
+    if (!t || !t.matches) return;
+    
+    // Find active match with running timer
+    const activeMatch = t.matches.find(m => m.status === 'in_progress' && m.timerRunning);
+    if (!activeMatch) return;
+    
+    const matchIdx = t.matches.indexOf(activeMatch);
+    
+    // Calculate elapsed time since timer was paused (if any)
+    if (activeMatch.timerStartedAt) {
+        const elapsed = Math.floor((Date.now() - activeMatch.timerStartedAt) / 1000);
+        activeMatch.timerRemaining = Math.max(0, activeMatch.timerRemaining - elapsed);
+    }
+    
+    // Resume timer
+    startMatchTimer(matchIdx);
+}
+
+function startMatchTimer(matchIdx) {
+    const t = state.currentTournament;
+    const match = t.matches[matchIdx];
+    if (!match || match.status !== 'in_progress') return;
+
+    match.timerRunning = true;
+    match.timerStartedAt = Date.now();
+    saveState();
+
+    // Clear any existing interval
+    if (matchTimerInterval) clearInterval(matchTimerInterval);
+
+    // Start interval
+    matchTimerInterval = setInterval(() => {
+        updateMatchTimer(matchIdx);
+    }, 1000);
+
+    renderMatches();
+}
+
+function pauseMatchTimer(matchIdx) {
+    const t = state.currentTournament;
+    const match = t.matches[matchIdx];
+    if (!match || match.status !== 'in_progress') return;
+
+    match.timerRunning = false;
+    
+    if (matchTimerInterval) {
+        clearInterval(matchTimerInterval);
+        matchTimerInterval = null;
+    }
+
+    saveState();
+    renderMatches();
+}
+
+function updateMatchTimer(matchIdx) {
+    const t = state.currentTournament;
+    const match = t.matches[matchIdx];
+    if (!match || match.status !== 'in_progress' || !match.timerRunning) return;
+
+    if (match.timerRemaining > 0) {
+        match.timerRemaining--;
+        saveState();
+
+        // Update UI without full re-render
+        const timerDisplay = document.getElementById('match-timer-display');
+        if (timerDisplay) {
+            const minutes = Math.floor(match.timerRemaining / 60);
+            const seconds = match.timerRemaining % 60;
+            timerDisplay.textContent = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+            
+            // Warning colors
+            if (match.timerRemaining <= 60) {
+                timerDisplay.style.color = 'var(--danger)';
+            } else if (match.timerRemaining <= 180) {
+                timerDisplay.style.color = 'var(--warning)';
+            }
+        }
+
+        if (match.timerRemaining === 0) {
+            // Timer finished - play whistle sound
+            playWhistleSound();
+            pauseMatchTimer(matchIdx);
+            showToast('⏱️ Tempo esgotado!');
+        }
+    }
+}
+
+function resetMatchTimer(matchIdx) {
+    const t = state.currentTournament;
+    const match = t.matches[matchIdx];
+    if (!match) return;
+
+    match.timerRemaining = match.timerDuration || 600;
+    match.timerRunning = false;
+    
+    if (matchTimerInterval) {
+        clearInterval(matchTimerInterval);
+        matchTimerInterval = null;
+    }
+
+    saveState();
+    renderMatches();
+}
+
+function playWhistleSound() {
+    // Create audio context and generate realistic referee whistle sound
+    try {
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const now = audioContext.currentTime;
+        const duration = 2.2; // 2.2 seconds total
+        
+        // Main whistle tone (1900 Hz)
+        const osc1 = audioContext.createOscillator();
+        const gain1 = audioContext.createGain();
+        osc1.connect(gain1);
+        gain1.connect(audioContext.destination);
+        osc1.frequency.value = 1900;
+        osc1.type = 'sine';
+        
+        // Volume envelope: fade in/out with sustain
+        gain1.gain.setValueAtTime(0, now);
+        gain1.gain.linearRampToValueAtTime(0.6, now + 0.1);
+        gain1.gain.linearRampToValueAtTime(0.5, now + 1.0);
+        gain1.gain.linearRampToValueAtTime(0.7, now + 1.5);
+        gain1.gain.linearRampToValueAtTime(0, now + duration);
+        
+        osc1.start(now);
+        osc1.stop(now + duration);
+        
+        // Second harmonic (2800 Hz) for richer tone
+        const osc2 = audioContext.createOscillator();
+        const gain2 = audioContext.createGain();
+        osc2.connect(gain2);
+        gain2.connect(audioContext.destination);
+        osc2.frequency.value = 2800;
+        osc2.type = 'triangle';
+        
+        gain2.gain.setValueAtTime(0, now);
+        gain2.gain.linearRampToValueAtTime(0.3, now + 0.1);
+        gain2.gain.linearRampToValueAtTime(0.25, now + 1.0);
+        gain2.gain.linearRampToValueAtTime(0.35, now + 1.5);
+        gain2.gain.linearRampToValueAtTime(0, now + duration);
+        
+        osc2.start(now);
+        osc2.stop(now + duration);
+        
+        // Frequency modulation for realistic whistle variation
+        const lfo = audioContext.createOscillator();
+        const lfoGain = audioContext.createGain();
+        lfo.connect(lfoGain);
+        lfoGain.connect(osc1.frequency);
+        lfo.frequency.value = 4; // LFO at 4 Hz for natural variation
+        lfoGain.gain.value = 50; // Frequency swing of ±50 Hz
+        
+        lfo.start(now);
+        lfo.stop(now + duration);
+    } catch (e) {
+        console.error('Erro ao tocar som:', e);
+    }
+}
+
 // ── Goalkeeper management ──
 
 function showGoalkeeperModal(matchIdx) {
@@ -826,14 +1096,56 @@ function showGoalkeeperModal(matchIdx) {
     const homeTeam = getTeam(match.homeTeamId);
     const awayTeam = getTeam(match.awayTeamId);
 
-    const allPlayers = [...state.players].sort((a, b) => a.name.localeCompare(b.name));
+    // Sort players: first goalkeepers (isGoalkeeper: true), then others
+    const allPlayers = [...state.players].sort((a, b) => {
+        if (a.isGoalkeeper !== b.isGoalkeeper) return b.isGoalkeeper ? 1 : -1;
+        return a.name.localeCompare(b.name);
+    });
 
-    const homeOptions = allPlayers.map(p =>
-        `<option value="${p.id}" ${match.homeGoalkeeper === p.id ? 'selected' : ''}>${esc(p.name)}</option>`
-    ).join('');
-    const awayOptions = allPlayers.map(p =>
-        `<option value="${p.id}" ${match.awayGoalkeeper === p.id ? 'selected' : ''}>${esc(p.name)}</option>`
-    ).join('');
+    // Helper function to build options for a team
+    const buildGoalkeeperOptions = (team, currentGoalkeeperValue) => {
+        const teamGoalkeepers = allPlayers.filter(p => team.players.includes(p.id) && p.isGoalkeeper);
+        const otherTeamPlayers = allPlayers.filter(p => team.players.includes(p.id) && !p.isGoalkeeper);
+        
+        let html = '';
+        
+        // Team goalkeepers (marked as such and in the team)
+        if (teamGoalkeepers.length > 0) {
+            html += `<optgroup label="🧤 Goleiros do Time">`;
+            teamGoalkeepers.forEach(p => {
+                html += `<option value="${p.id}" ${currentGoalkeeperValue === p.id ? 'selected' : ''}>${esc(p.name)} 🧤</option>`;
+            });
+            html += `</optgroup>`;
+        }
+        
+        // Other team players (as fallback)
+        if (otherTeamPlayers.length > 0) {
+            html += `<optgroup label="Outros Jogadores do Time">`;
+            otherTeamPlayers.forEach(p => {
+                html += `<option value="${p.id}" ${currentGoalkeeperValue === p.id ? 'selected' : ''}>${esc(p.name)}</option>`;
+            });
+            html += `</optgroup>`;
+        }
+        
+        // All other players (from other teams or not assigned)
+        const otherPlayers = allPlayers.filter(p => !team.players.includes(p.id));
+        if (otherPlayers.length > 0) {
+            html += `<optgroup label="Outros Jogadores">`;
+            otherPlayers.forEach(p => {
+                html += `<option value="${p.id}" ${currentGoalkeeperValue === p.id ? 'selected' : ''}>${esc(p.name)}${p.isGoalkeeper ? ' 🧤' : ''}</option>`;
+            });
+            html += `</optgroup>`;
+        }
+        
+        return html;
+    };
+
+    // Pre-select with designated goalkeeper or current value
+    const homeGoalkeeperValue = match.homeGoalkeeper !== null ? match.homeGoalkeeper : homeTeam.designatedGoalkeeperId;
+    const awayGoalkeeperValue = match.awayGoalkeeper !== null ? match.awayGoalkeeper : awayTeam.designatedGoalkeeperId;
+
+    const homeOptions = buildGoalkeeperOptions(homeTeam, homeGoalkeeperValue);
+    const awayOptions = buildGoalkeeperOptions(awayTeam, awayGoalkeeperValue);
 
     showModal(`
         <div class="modal-title">🧤 Goleiros da Partida</div>
@@ -893,6 +1205,37 @@ function confirmGoalkeepers(matchIdx) {
 }
 
 // ── Match end flow ──
+
+function confirmEndMatch(matchIdx) {
+    const t = state.currentTournament;
+    const match = t.matches[matchIdx];
+    if (!match || match.status !== 'in_progress') return;
+
+    const homeTeam = getTeam(match.homeTeamId);
+    const awayTeam = getTeam(match.awayTeamId);
+
+    showModal(`
+        <div class="modal-title">⚠️ Encerrar Partida?</div>
+        <p style="text-align:center;color:var(--text-secondary);margin-bottom:16px;">
+            Confirme o encerramento da partida:
+        </p>
+        <div style="text-align:center;margin-bottom:16px;">
+            <div style="font-size:1.2rem;font-weight:700;margin-bottom:8px;">
+                <span style="color:${homeTeam.color}">${esc(homeTeam.name)}</span>
+                <span style="margin:0 8px;">${match.homeScore} × ${match.awayScore}</span>
+                <span style="color:${awayTeam.color}">${esc(awayTeam.name)}</span>
+            </div>
+            <small style="color:var(--text-muted);">Jogo ${match.round} de ${TOTAL_ROUNDS}</small>
+        </div>
+        <p style="text-align:center;color:var(--text-secondary);font-size:0.85rem;">
+            Após encerrar, não será possível editar o placar.
+        </p>
+        <div class="modal-actions">
+            <button class="btn btn-secondary" onclick="hideModal()">Cancelar</button>
+            <button class="btn btn-primary" onclick="hideModal();endMatch(${matchIdx})">Confirmar e Encerrar</button>
+        </div>
+    `);
+}
 
 function endMatch(matchIdx) {
     const t = state.currentTournament;
@@ -1022,7 +1365,11 @@ function handleMatch1Result(stayTeamId, leaveTeamId) {
             homeGoalkeeper: null,
             awayGoalkeeper: null,
             goals: [],
-            status: 'pending'
+            status: 'pending',
+            timerDuration: 600,
+            timerRemaining: 600,
+            timerRunning: false,
+            timerStartedAt: null
         });
     }
 
@@ -1274,13 +1621,44 @@ function renderActiveMatch(match, idx) {
     }
     html += `</div>`;
 
+    // Match Timer
+    const minutes = Math.floor(match.timerRemaining / 60);
+    const seconds = match.timerRemaining % 60;
+    const timerDisplay = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+    const timerClass = match.timerRemaining <= 60 ? 'timer-danger' : match.timerRemaining <= 180 ? 'timer-warning' : '';
+    
+    html += `
+        <div style="margin-top:16px;text-align:center;">
+            <div style="font-size:0.9rem;color:var(--text-secondary);margin-bottom:4px;">⏱️ Tempo de Partida</div>
+            <div id="match-timer-display" style="font-size:2.5rem;font-weight:bold;margin:8px 0;" class="${timerClass}">
+                ${timerDisplay}
+            </div>
+            <div style="display:flex;gap:8px;justify-content:center;margin-top:8px;">
+                ${!match.timerRunning ? `
+                    <button class="btn btn-success btn-sm" onclick="startMatchTimer(${idx})">
+                        ▶️ ${match.timerRemaining === match.timerDuration ? 'Iniciar' : 'Retomar'}
+                    </button>
+                ` : `
+                    <button class="btn btn-warning btn-sm" onclick="pauseMatchTimer(${idx})">
+                        ⏸️ Pausar
+                    </button>
+                `}
+                ${match.timerRemaining !== match.timerDuration ? `
+                    <button class="btn btn-secondary btn-sm" onclick="resetMatchTimer(${idx})">
+                        🔄 Resetar
+                    </button>
+                ` : ''}
+            </div>
+        </div>
+    `;
+
     // End match button
     html += `
             <div style="margin-top:16px;display:flex;gap:8px;justify-content:center;">
                 ${canSetGoalkeepers() ? `<button class="btn btn-secondary btn-sm" onclick="showGoalkeeperModal(${idx})">
                     🧤 Definir Goleiros
                 </button>` : ''}
-                ${canEndMatch() ? `<button class="btn btn-primary" onclick="endMatch(${idx})">
+                ${canEndMatch() ? `<button class="btn btn-primary" onclick="confirmEndMatch(${idx})">
                     Encerrar Partida
                 </button>` : ''}
             </div>
@@ -2026,7 +2404,7 @@ function renderAllTimeStats(hasData) {
                 ${finished.slice().reverse().map((t, i) => {
                     const date = t.finishedAt ? new Date(t.finishedAt).toLocaleDateString('pt-BR') : new Date(t.createdAt).toLocaleDateString('pt-BR');
                     return `
-                        <div class="card" style="padding:10px 14px;margin-bottom:6px;">
+                        <div class="card" style="padding:10px 14px;margin-bottom:6px;cursor:pointer;" onclick="showTournamentDetails(${state.history.length - 1 - i})">
                             <div style="display:flex;justify-content:space-between;align-items:center;">
                                 <div>
                                     <small style="color:var(--text-muted)">${date}</small>
@@ -2034,11 +2412,14 @@ function renderAllTimeStats(hasData) {
                                         ${t.teams.map(tm => esc(tm.name)).join(' × ')}
                                     </div>
                                 </div>
-                                <div style="text-align:right;">
-                                    ${t.champion ? `
-                                        <div style="font-size:0.75rem;color:var(--gold);font-weight:700;">🏆 ${esc(t.champion.teamName)}</div>
-                                        <div style="font-size:0.7rem;color:var(--text-muted);">${t.champion.pts}pts | ${t.champion.gf}gols</div>
-                                    ` : ''}
+                                <div style="text-align:right;display:flex;align-items:center;gap:8px;">
+                                    <div>
+                                        ${t.champion ? `
+                                            <div style="font-size:0.75rem;color:var(--gold);font-weight:700;">🏆 ${esc(t.champion.teamName)}</div>
+                                            <div style="font-size:0.7rem;color:var(--text-muted);">${t.champion.pts}pts | ${t.champion.gf}gols</div>
+                                        ` : ''}
+                                    </div>
+                                    <span style="font-size:1.2rem;color:var(--text-muted);">›</span>
                                 </div>
                             </div>
                         </div>
@@ -2049,6 +2430,194 @@ function renderAllTimeStats(hasData) {
     }
 
     return html;
+}
+
+// ═══════════════════════════════════════════════════
+// TOURNAMENT DETAILS (HISTORICAL)
+// ═══════════════════════════════════════════════════
+function showTournamentDetails(historyIndex) {
+    const t = state.history[historyIndex];
+    if (!t) return;
+
+    const date = t.finishedAt ? new Date(t.finishedAt).toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' }) : 
+                 new Date(t.createdAt).toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' });
+
+    // Calculate standings
+    const standings = calculateStandingsForTournament(t);
+    
+    // Get scorers
+    const scorers = getTopScorersForTournament(t);
+    
+    // Get goalkeeper stats
+    const gkStats = getGoalkeeperStatsForTournament(t);
+
+    // Resolve player names from snapshot
+    const getPlayerNameFromTournament = (playerId) => {
+        return t.playerSnapshot?.[playerId] || getPlayerName(playerId);
+    };
+
+    let html = `
+        <div class="modal-title">🏆 Detalhes do Torneio</div>
+        <div style="text-align:center;margin-bottom:16px;">
+            <div style="font-size:0.85rem;color:var(--text-muted);margin-bottom:4px;">${date}</div>
+            <div style="font-size:1rem;font-weight:700;">${t.teams.map(tm => esc(tm.name)).join(' × ')}</div>
+            ${t.champion ? `
+                <div style="margin-top:8px;padding:8px;background:var(--bg-input);border-radius:8px;">
+                    <div style="font-size:0.8rem;color:var(--gold);font-weight:700;">🏆 Campeão: ${esc(t.champion.teamName)}</div>
+                    <div style="font-size:0.75rem;color:var(--text-secondary);">${t.champion.pts} pontos • ${t.champion.gf} gols</div>
+                </div>
+            ` : ''}
+        </div>
+
+        <div style="max-height:60vh;overflow-y:auto;padding:0 4px;">
+    `;
+
+    // 1. CLASSIFICAÇÃO
+    if (standings.length > 0) {
+        html += `
+            <div style="margin-bottom:20px;">
+                <h4 style="font-size:0.9rem;font-weight:700;margin-bottom:8px;color:var(--accent);">📊 Classificação</h4>
+                <div style="overflow-x:auto;">
+                    <table class="standings-table" style="font-size:0.8rem;">
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>Time</th>
+                                <th>J</th>
+                                <th>V</th>
+                                <th>E</th>
+                                <th>D</th>
+                                <th>GF</th>
+                                <th>GC</th>
+                                <th>SG</th>
+                                <th>PTS</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${standings.map((s, i) => `
+                                <tr>
+                                    <td><span class="pos-badge pos-${i + 1}">${i + 1}</span></td>
+                                    <td>
+                                        <span style="display:inline-flex;align-items:center;gap:4px;">
+                                            <span class="score-team-color" style="background:${s.color}"></span>
+                                            ${esc(s.name)}
+                                        </span>
+                                    </td>
+                                    <td>${s.played}</td>
+                                    <td>${s.won}</td>
+                                    <td>${s.drawn}</td>
+                                    <td>${s.lost}</td>
+                                    <td>${s.gf}</td>
+                                    <td>${s.ga}</td>
+                                    <td>${s.gd > 0 ? '+' : ''}${s.gd}</td>
+                                    <td class="pts">${s.pts}</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        `;
+    }
+
+    // 2. ARTILHARIA
+    if (scorers.length > 0) {
+        html += `
+            <div style="margin-bottom:20px;">
+                <h4 style="font-size:0.9rem;font-weight:700;margin-bottom:8px;color:var(--accent);">⚽ Artilharia</h4>
+                <table class="stats-table" style="font-size:0.8rem;">
+                    <thead><tr><th>#</th><th>Jogador</th><th>Gols</th></tr></thead>
+                    <tbody>
+                        ${scorers.slice(0, 10).map((s, i) => `
+                            <tr>
+                                <td>${i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : i + 1}</td>
+                                <td>${esc(getPlayerNameFromTournament(s.playerId))}</td>
+                                <td style="font-weight:800;color:var(--accent)">${s.goals}</td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            </div>
+        `;
+    }
+
+    // 3. GOLEIROS
+    if (gkStats.length > 0) {
+        html += `
+            <div style="margin-bottom:20px;">
+                <h4 style="font-size:0.9rem;font-weight:700;margin-bottom:8px;color:var(--accent);">🧤 Goleiros</h4>
+                <table class="stats-table" style="font-size:0.8rem;">
+                    <thead>
+                        <tr><th>#</th><th>Goleiro</th><th>J</th><th>GS</th><th>V</th><th>SG</th></tr>
+                    </thead>
+                    <tbody>
+                        ${gkStats.slice(0, 10).map((gk, i) => `
+                            <tr>
+                                <td>${i + 1}</td>
+                                <td>${esc(getPlayerNameFromTournament(gk.playerId))}</td>
+                                <td>${gk.matches}</td>
+                                <td>${gk.goalsAgainst}</td>
+                                <td style="color:var(--accent)">${gk.wins}</td>
+                                <td>${gk.cleanSheets}</td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+                <p style="font-size:0.65rem;color:var(--text-muted);margin-top:4px;">
+                    J=Jogos | GS=Gols Sofridos | V=Vitórias | SG=Sem Gol
+                </p>
+            </div>
+        `;
+    }
+
+    // 4. JOGOS
+    const finishedMatches = t.matches.filter(m => m.status === 'finished');
+    if (finishedMatches.length > 0) {
+        html += `
+            <div style="margin-bottom:20px;">
+                <h4 style="font-size:0.9rem;font-weight:700;margin-bottom:8px;color:var(--accent);">⚽ Jogos</h4>
+                ${finishedMatches.map(match => {
+                    const homeTeam = t.teams.find(tm => tm.id === match.homeTeamId);
+                    const awayTeam = t.teams.find(tm => tm.id === match.awayTeamId);
+                    const winnerSide = match.homeScore > match.awayScore ? 'home' : 
+                                       match.awayScore > match.homeScore ? 'away' : null;
+                    
+                    return `
+                        <div style="padding:8px;margin-bottom:6px;background:var(--bg-input);border-radius:6px;font-size:0.8rem;">
+                            <div style="font-weight:600;margin-bottom:4px;color:var(--text-muted);">Jogo ${match.round}</div>
+                            <div style="display:flex;justify-content:space-between;align-items:center;">
+                                <div style="flex:1;${winnerSide === 'home' ? 'color:var(--accent);font-weight:700;' : ''}">
+                                    <span class="score-team-color" style="background:${homeTeam?.color || '#888'};display:inline-block;margin-right:4px;"></span>
+                                    ${esc(homeTeam?.name || '???')}
+                                </div>
+                                <div style="font-size:1.1rem;font-weight:800;padding:0 12px;">
+                                    ${match.homeScore} × ${match.awayScore}
+                                </div>
+                                <div style="flex:1;text-align:right;${winnerSide === 'away' ? 'color:var(--accent);font-weight:700;' : ''}">
+                                    ${esc(awayTeam?.name || '???')}
+                                    <span class="score-team-color" style="background:${awayTeam?.color || '#888'};display:inline-block;margin-left:4px;"></span>
+                                </div>
+                            </div>
+                            ${match.goals && match.goals.length > 0 ? `
+                                <div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--border);font-size:0.7rem;color:var(--text-secondary);">
+                                    Gols: ${match.goals.map(g => esc(getPlayerNameFromTournament(g.playerId))).join(', ')}
+                                </div>
+                            ` : ''}
+                        </div>
+                    `;
+                }).join('')}
+            </div>
+        `;
+    }
+
+    html += `
+        </div>
+        <div class="modal-actions" style="margin-top:16px;">
+            <button class="btn btn-secondary btn-block" onclick="hideModal()">Fechar</button>
+        </div>
+    `;
+
+    showModal(html);
 }
 
 // ═══════════════════════════════════════════════════
@@ -2407,6 +2976,16 @@ function init() {
         }
     });
 
+    // Capture redirect auth errors (if popup fallback was used)
+    auth.getRedirectResult().catch((e) => {
+        console.error('Google redirect result error:', e);
+        const msg = getGoogleAuthErrorMessage(e);
+        if (!msg) return;
+        const errorEl = document.getElementById('login-error');
+        errorEl.textContent = msg;
+        errorEl.classList.remove('hidden');
+    });
+
     // Logout button
     document.getElementById('btn-logout').addEventListener('click', logout);
 
@@ -2439,6 +3018,7 @@ function init() {
                 }
 
                 await loadState();
+                resumeMatchTimerIfNeeded();
                 await migrateLocalStorageToFirestore();
                 startRealtimeSync();
                 showAppScreen();
@@ -2453,6 +3033,7 @@ function init() {
                     role: 'user'
                 };
                 await loadState();
+                resumeMatchTimerIfNeeded();
                 showAppScreen();
             }
         } else {

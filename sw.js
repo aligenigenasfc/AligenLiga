@@ -2,7 +2,7 @@
 //  AlienígenasFC — Service Worker (PWA offline support)
 // ═══════════════════════════════════════════════════════
 
-const CACHE_NAME = 'alienigenasfc-v1';
+const CACHE_NAME = 'alienigenasfc-v2';
 
 // App shell files to cache for offline use
 const APP_SHELL = [

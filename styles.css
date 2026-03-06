@@ -1216,6 +1216,22 @@ input::placeholder { color: var(--text-muted); }
 }
 .user-role-badge.role-captain {
     background: rgba(33, 150, 243, 0.15);
+}
+
+/* ═══ MATCH TIMER ═══ */
+.timer-warning {
+    color: var(--warning) !important;
+}
+
+.timer-danger {
+    color: var(--danger) !important;
+    animation: timerPulse 1s ease-in-out infinite;
+}
+
+@keyframes timerPulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+}
     color: var(--info);
 }
 

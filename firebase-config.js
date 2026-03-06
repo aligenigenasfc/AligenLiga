@@ -71,3 +71,6 @@ auth.languageCode = 'pt';
 
 // Google Auth Provider
 const googleProvider = new firebase.auth.GoogleAuthProvider();
+googleProvider.setCustomParameters({
+    prompt: 'select_account'
+});
