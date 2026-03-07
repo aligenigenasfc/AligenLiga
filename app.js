@@ -28,6 +28,8 @@ const TOTAL_ROUNDS = 9;
 const WIN_PTS = 3;
 const DRAW_PTS = 1;
 const LOSS_PTS = 0;
+const DEFAULT_MATCH_DURATION_MINUTES = 10;
+const MATCH_DURATION_OPTIONS_MINUTES = [5, 7, 10, 12, 15, 20];
 
 // ───── MATCH TIMER ─────
 let matchTimerInterval = null;
@@ -192,6 +194,17 @@ let state = {
     history: []
 };
 
+function normalizeMatchDurationMinutes(value) {
+    const minutes = Number.parseInt(value, 10);
+    if (!Number.isFinite(minutes)) return DEFAULT_MATCH_DURATION_MINUTES;
+    return Math.max(3, Math.min(60, minutes));
+}
+
+function getTournamentMatchDurationSeconds(tournament = state.currentTournament) {
+    const minutes = normalizeMatchDurationMinutes(tournament?.matchDurationMinutes);
+    return minutes * 60;
+}
+
 // ───── PERSISTENCE (FIRESTORE + localStorage fallback) ─────
 
 /** Load state from Firestore (with localStorage fallback) */
@@ -213,14 +226,27 @@ async function loadState() {
         const tournDoc = await db.collection('appData').doc('tournament').get();
         if (tournDoc.exists && tournDoc.data().data) {
             state.currentTournament = tournDoc.data().data;
+
+            // migration: ensure tournament match duration field
+            if (state.currentTournament.matchDurationMinutes === undefined) {
+                const firstDuration = state.currentTournament?.matches?.[0]?.timerDuration;
+                const inferredMinutes = Number.isFinite(firstDuration) && firstDuration > 0
+                    ? Math.round(firstDuration / 60)
+                    : DEFAULT_MATCH_DURATION_MINUTES;
+                state.currentTournament.matchDurationMinutes = normalizeMatchDurationMinutes(inferredMinutes);
+            } else {
+                state.currentTournament.matchDurationMinutes = normalizeMatchDurationMinutes(state.currentTournament.matchDurationMinutes);
+            }
+
             // migration: ensure goalkeepers field
             if (state.currentTournament?.matches) {
+                const defaultDurationSeconds = getTournamentMatchDurationSeconds(state.currentTournament);
                 state.currentTournament.matches.forEach(m => {
                     if (!m.homeGoalkeeper) m.homeGoalkeeper = null;
                     if (!m.awayGoalkeeper) m.awayGoalkeeper = null;
                     // migration: ensure timer fields
-                    if (m.timerDuration === undefined) m.timerDuration = 600; // 10 minutes
-                    if (m.timerRemaining === undefined) m.timerRemaining = 600;
+                    if (!Number.isFinite(m.timerDuration) || m.timerDuration <= 0) m.timerDuration = defaultDurationSeconds;
+                    if (!Number.isFinite(m.timerRemaining) || m.timerRemaining < 0) m.timerRemaining = m.timerDuration;
                     if (m.timerRunning === undefined) m.timerRunning = false;
                     if (m.timerStartedAt === undefined) m.timerStartedAt = null;
                 });
@@ -493,6 +519,7 @@ function createTournament() {
         id: uid(),
         createdAt: new Date().toISOString(),
         status: 'setup', // setup → scheduling → in_progress → finished
+        matchDurationMinutes: DEFAULT_MATCH_DURATION_MINUTES,
         teams: [
             { id: uid(), name: DEFAULT_TEAMS[0].name, color: DEFAULT_TEAMS[0].hex, imgLeft: DEFAULT_TEAMS[0].imgLeft, imgRight: DEFAULT_TEAMS[0].imgRight, players: [], designatedGoalkeeperId: null },
             { id: uid(), name: DEFAULT_TEAMS[1].name, color: DEFAULT_TEAMS[1].hex, imgLeft: DEFAULT_TEAMS[1].imgLeft, imgRight: DEFAULT_TEAMS[1].imgRight, players: [], designatedGoalkeeperId: null },
@@ -603,6 +630,15 @@ function setTeamDesignatedGoalkeeper(teamId, playerId) {
     }
 }
 
+function setMatchDurationMinutes(minutesValue) {
+    if (!canCreateTournament()) { showToast('Sem permissão!'); return; }
+    const t = state.currentTournament;
+    if (!t || t.status !== 'setup') return;
+    t.matchDurationMinutes = normalizeMatchDurationMinutes(minutesValue);
+    saveState();
+    renderTournament();
+}
+
 function canStartTournament() {
     const t = state.currentTournament;
     if (!t) return false;
@@ -705,12 +741,31 @@ function renderTournamentSetup(container) {
     const unassigned = state.players.filter(p => !allAssigned.has(p.id));
     const canEdit = canAssignPlayers();
     const canChangeName = canChangeTeams();
+    const matchDurationMinutes = normalizeMatchDurationMinutes(t.matchDurationMinutes);
 
     container.innerHTML = `
         <div class="view-header">
             <h2>🏆 Configurar Torneio</h2>
             <p class="view-subtitle">Monte os 3 times e distribua os jogadores</p>
         </div>
+
+        ${canCreateTournament() ? `
+            <div class="card" style="margin-bottom:12px;">
+                <div style="font-size:0.85rem;font-weight:700;margin-bottom:6px;">⏱️ Tempo de cada jogo</div>
+                <div style="font-size:0.78rem;color:var(--text-secondary);margin-bottom:8px;">
+                    Defina a duração que será aplicada para todas as partidas deste torneio.
+                </div>
+                <select onchange="setMatchDurationMinutes(this.value)" style="width:100%;font-size:0.9rem;">
+                    ${MATCH_DURATION_OPTIONS_MINUTES.map(minutes => `
+                        <option value="${minutes}" ${minutes === matchDurationMinutes ? 'selected' : ''}>${minutes} minutos</option>
+                    `).join('')}
+                </select>
+            </div>
+        ` : `
+            <div class="notice notice-info">
+                ⏱️ Duração das partidas: <strong>${matchDurationMinutes} min</strong>
+            </div>
+        `}
 
         ${t.teams.map((team, i) => `
             <div class="card team-card" style="border-left-color:${team.color}">
@@ -823,6 +878,7 @@ function startNextMatch() {
 
 function selectMatch1Teams(homeId, awayId) {
     const t = state.currentTournament;
+    const durationSeconds = getTournamentMatchDurationSeconds(t);
     t.match1Selection = { home: homeId, away: awayId };
     t.matches = [{
         round: 1,
@@ -834,8 +890,8 @@ function selectMatch1Teams(homeId, awayId) {
         awayGoalkeeper: null,
         goals: [],
         status: 'in_progress',
-        timerDuration: 600, // 10 minutes in seconds
-        timerRemaining: 600,
+        timerDuration: durationSeconds,
+        timerRemaining: durationSeconds,
         timerRunning: false,
         timerStartedAt: null
     }];
@@ -1019,7 +1075,7 @@ function resetMatchTimer(matchIdx) {
     const match = t.matches[matchIdx];
     if (!match) return;
 
-    match.timerRemaining = match.timerDuration || 600;
+    match.timerRemaining = match.timerDuration || getTournamentMatchDurationSeconds(t);
     match.timerRunning = false;
     
     if (matchTimerInterval) {
@@ -1337,6 +1393,7 @@ function saveTournamentToHistory(tournament) {
 
 function handleMatch1Result(stayTeamId, leaveTeamId) {
     const t = state.currentTournament;
+    const durationSeconds = getTournamentMatchDurationSeconds(t);
 
     // Save match 1 data before regenerating schedule
     const match1Data = { ...t.matches[0], goals: [...t.matches[0].goals] };
@@ -1366,8 +1423,8 @@ function handleMatch1Result(stayTeamId, leaveTeamId) {
             awayGoalkeeper: null,
             goals: [],
             status: 'pending',
-            timerDuration: 600,
-            timerRemaining: 600,
+            timerDuration: durationSeconds,
+            timerRemaining: durationSeconds,
             timerRunning: false,
             timerStartedAt: null
         });
