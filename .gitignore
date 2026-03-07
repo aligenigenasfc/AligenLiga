@@ -1,0 +1,7 @@
+# Local-only files not required in final app deployment
+node_modules/
+TESTING.md
+create-test-user.js
+import-players.js
+package.json
+package-lock.json
