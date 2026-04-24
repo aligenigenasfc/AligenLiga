@@ -2451,15 +2451,11 @@ function getAllTimeTopScorers() {
             match.goals.forEach(goal => {
                 const name = resolvePlayerName(goal.playerId, t);
                 if (!scorers[goal.playerId]) {
-                    scorers[goal.playerId] = { playerId: goal.playerId, name, goals: 0, tournaments: 0 };
+                    scorers[goal.playerId] = { playerId: goal.playerId, name, goals: 0, tournamentsPlayed: 0, goalsPerGame: 0 };
                 }
                 scorers[goal.playerId].goals++;
             });
         });
-        // Count tournaments with at least 1 goal
-        const tScorers = new Set();
-        t.matches.filter(m => m.status === 'finished').forEach(m => m.goals.forEach(g => tScorers.add(g.playerId)));
-        tScorers.forEach(pid => { if (scorers[pid]) scorers[pid].tournaments++; });
     });
 
     // Also include current tournament if it has finished matches
@@ -2470,16 +2466,29 @@ function getAllTimeTopScorers() {
             match.goals.forEach(goal => {
                 const name = getPlayerName(goal.playerId);
                 if (!scorers[goal.playerId]) {
-                    scorers[goal.playerId] = { playerId: goal.playerId, name, goals: 0, tournaments: 0 };
+                    scorers[goal.playerId] = { playerId: goal.playerId, name, goals: 0, tournamentsPlayed: 0, goalsPerGame: 0 };
                 }
                 scorers[goal.playerId].goals++;
-                curScorers.add(goal.playerId);
             });
         });
-        curScorers.forEach(pid => { if (scorers[pid]) scorers[pid].tournaments++; });
     }
 
-    return Object.values(scorers).sort((a, b) => b.goals - a.goals);
+    const tournamentsPlayedMap = new Map(getAllTimeGamesPlayed().map(player => [player.playerId, player.tournamentsPlayed]));
+
+    return Object.values(scorers)
+        .map(scorer => {
+            const tournamentsPlayed = tournamentsPlayedMap.get(scorer.playerId) || 0;
+            return {
+                ...scorer,
+                tournamentsPlayed,
+                goalsPerGame: tournamentsPlayed > 0 ? scorer.goals / tournamentsPlayed : 0
+            };
+        })
+        .sort((a, b) => {
+            if (b.goals !== a.goals) return b.goals - a.goals;
+            if (b.goalsPerGame !== a.goalsPerGame) return b.goalsPerGame - a.goalsPerGame;
+            return b.tournamentsPlayed - a.tournamentsPlayed;
+        });
 }
 
 function getAllTimeGoalkeeperStats() {
@@ -2571,8 +2580,8 @@ function getAllTimeGamesPlayed() {
     }
 
     return Object.values(players).sort((a, b) => {
-        if (b.gamesPlayed !== a.gamesPlayed) return b.gamesPlayed - a.gamesPlayed;
-        return b.tournamentsPlayed - a.tournamentsPlayed;
+        if (b.tournamentsPlayed !== a.tournamentsPlayed) return b.tournamentsPlayed - a.tournamentsPlayed;
+        return b.gamesPlayed - a.gamesPlayed;
     });
 }
 
@@ -2686,7 +2695,11 @@ function renderTournamentStats(hasData) {
 }
 
 function renderAllTimeStats(hasData) {
-    const finished = getFinishedHistory();
+    const finishedEntries = state.history
+        .map((entry, index) => ({ entry, index }))
+        .filter(({ entry }) => entry.status === 'finished' && entry.champion)
+        .sort((a, b) => getHistoryEntryTimestamp(b.entry) - getHistoryEntryTimestamp(a.entry));
+    const finished = finishedEntries.map(({ entry }) => entry);
 
     if (!hasData) {
         return `
@@ -2709,13 +2722,15 @@ function renderAllTimeStats(hasData) {
     // 1. Most Championships
     const champions = getAllTimeChampions();
     if (champions.length > 0) {
+        const tournamentsPlayedMap = new Map(getAllTimeGamesPlayed().map(player => [player.playerId, player.tournamentsPlayed]));
         html += `
             <div class="stats-section">
                 <h3>🏆 Mais Títulos</h3>
+                <div style="max-height:320px;overflow-y:auto;overflow-x:auto;">
                 <table class="stats-table">
-                    <thead><tr><th>#</th><th>Jogador</th><th>Títulos</th></tr></thead>
+                    <thead><tr><th>#</th><th>Jogador</th><th>Títulos</th><th>% Aproveitamento</th></tr></thead>
                     <tbody>
-                        ${champions.slice(0, 15).map((c, i) => `
+                        ${champions.map((c, i) => `
                             <tr>
                                 <td>${i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : i + 1}</td>
                                 <td>
@@ -2725,10 +2740,15 @@ function renderAllTimeStats(hasData) {
                                     </div>
                                 </td>
                                 <td style="font-weight:800;color:var(--gold);">${c.titles}</td>
+                                <td style="font-weight:700;color:var(--warning);">${(() => {
+                                    const tournamentsPlayed = tournamentsPlayedMap.get(c.playerId) || 0;
+                                    return tournamentsPlayed > 0 ? ((c.titles / tournamentsPlayed) * 100).toFixed(1) : '0.0';
+                                })()}%</td>
                             </tr>
                         `).join('')}
                     </tbody>
                 </table>
+                </div>
             </div>
         `;
     }
@@ -2736,22 +2756,25 @@ function renderAllTimeStats(hasData) {
     // 2. Most Games Played
     const gamesPlayed = getAllTimeGamesPlayed();
     if (gamesPlayed.length > 0) {
+        const totalTournaments = finished.length;
         html += `
             <div class="stats-section">
                 <h3>🎮 Mais Jogos</h3>
+                <div style="max-height:320px;overflow-y:auto;overflow-x:auto;">
                 <table class="stats-table">
-                    <thead><tr><th>#</th><th>Jogador</th><th>Jogos</th><th>Torneios</th></tr></thead>
+                    <thead><tr><th>#</th><th>Jogador</th><th>Qtd Jogos</th><th>% Participação</th></tr></thead>
                     <tbody>
-                        ${gamesPlayed.slice(0, 15).map((p, i) => `
+                        ${gamesPlayed.map((p, i) => `
                             <tr>
                                 <td>${i + 1}</td>
                                 <td>${esc(p.name)}</td>
-                                <td style="font-weight:700;">${p.gamesPlayed}</td>
-                                <td style="color:var(--text-secondary);">${p.tournamentsPlayed}</td>
+                                <td style="font-weight:700;">${p.tournamentsPlayed}</td>
+                                <td style="font-weight:700;color:var(--warning);">${totalTournaments > 0 ? ((p.tournamentsPlayed / totalTournaments) * 100).toFixed(1) : '0.0'}%</td>
                             </tr>
                         `).join('')}
                     </tbody>
                 </table>
+                </div>
             </div>
         `;
     }
@@ -2762,19 +2785,22 @@ function renderAllTimeStats(hasData) {
         html += `
             <div class="stats-section">
                 <h3>⚽ Artilharia Geral</h3>
+                <div style="max-height:320px;overflow-y:auto;overflow-x:auto;">
                 <table class="stats-table">
-                    <thead><tr><th>#</th><th>Jogador</th><th>Gols</th><th>Torneios</th></tr></thead>
+                    <thead><tr><th>#</th><th>Jogador</th><th>Gols</th><th>Qtd Jogos</th><th>% G/J</th></tr></thead>
                     <tbody>
-                        ${scorers.slice(0, 15).map((s, i) => `
+                        ${scorers.map((s, i) => `
                             <tr>
                                 <td>${i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : i + 1}</td>
                                 <td>${esc(s.name)}</td>
                                 <td style="font-weight:800;color:var(--accent);">${s.goals}</td>
-                                <td style="color:var(--text-secondary);">${s.tournaments}</td>
+                                <td style="color:var(--text-secondary);">${s.tournamentsPlayed}</td>
+                                <td style="font-weight:700;color:var(--warning);">${s.goalsPerGame.toFixed(2)}</td>
                             </tr>
                         `).join('')}
                     </tbody>
                 </table>
+                </div>
             </div>
         `;
     }
@@ -2817,10 +2843,10 @@ function renderAllTimeStats(hasData) {
         html += `
             <div class="stats-section">
                 <h3>📜 Histórico de Torneios</h3>
-                ${finished.slice().reverse().map((t, i) => {
+                ${finishedEntries.map(({ entry: t, index }) => {
                     const date = t.finishedAt ? new Date(t.finishedAt).toLocaleDateString('pt-BR') : new Date(t.createdAt).toLocaleDateString('pt-BR');
                     return `
-                        <div class="card" style="padding:10px 14px;margin-bottom:6px;cursor:pointer;" onclick="showTournamentDetails(${state.history.length - 1 - i})">
+                        <div class="card" style="padding:10px 14px;margin-bottom:6px;cursor:pointer;" onclick="showTournamentDetails(${index})">
                             <div style="display:flex;justify-content:space-between;align-items:center;">
                                 <div>
                                     <small style="color:var(--text-muted)">${date}</small>
