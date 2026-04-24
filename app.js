@@ -204,6 +204,60 @@ function getTournamentMatchDurationSeconds(tournament = state.currentTournament)
     const minutes = normalizeMatchDurationMinutes(tournament?.matchDurationMinutes);
     return minutes * 60;
 }
+function getHistoryEntryKey(entry) {
+    return entry?.id || entry?._firestoreId || null;
+}
+
+function getHistoryEntryTimestamp(entry) {
+    const raw = entry?.finishedAt || entry?.createdAt || null;
+    if (!raw) return 0;
+    const time = new Date(raw).getTime();
+    return Number.isFinite(time) ? time : 0;
+}
+
+function normalizeHistoryEntries(entries = []) {
+    const byKey = new Map();
+
+    entries.forEach(entry => {
+        const key = getHistoryEntryKey(entry);
+        if (!key) return;
+
+        const existing = byKey.get(key);
+        if (!existing || getHistoryEntryTimestamp(entry) >= getHistoryEntryTimestamp(existing)) {
+            byKey.set(key, entry);
+        }
+    });
+
+    return Array.from(byKey.values()).sort((a, b) => getHistoryEntryTimestamp(b) - getHistoryEntryTimestamp(a));
+}
+
+async function cleanupDuplicateHistoryDocs(historyDocs = []) {
+    const docsByKey = new Map();
+
+    historyDocs.forEach(doc => {
+        const data = doc.data();
+        const key = data?.id || doc.id;
+        if (!docsByKey.has(key)) docsByKey.set(key, []);
+        docsByKey.get(key).push({ doc, data });
+    });
+
+    const deleteOps = [];
+    docsByKey.forEach(group => {
+        if (group.length <= 1) return;
+
+        group.sort((a, b) => {
+            if (a.doc.id === (a.data?.id || a.doc.id)) return -1;
+            if (b.doc.id === (b.data?.id || b.doc.id)) return 1;
+            return getHistoryEntryTimestamp(b.data) - getHistoryEntryTimestamp(a.data);
+        });
+
+        group.slice(1).forEach(({ doc }) => deleteOps.push(doc.ref.delete()));
+    });
+
+    if (deleteOps.length > 0) {
+        await Promise.all(deleteOps);
+    }
+}
 
 // ───── PERSISTENCE (FIRESTORE + localStorage fallback) ─────
 
@@ -268,7 +322,11 @@ async function loadState() {
 
         // History
         const histSnap = await db.collection('history').orderBy('finishedAt', 'desc').get();
-        state.history = histSnap.docs.map(d => ({ _firestoreId: d.id, ...d.data() }));
+        const rawHistory = histSnap.docs.map(d => ({ _firestoreId: d.id, ...d.data() }));
+        state.history = normalizeHistoryEntries(rawHistory);
+
+        cleanupDuplicateHistoryDocs(histSnap.docs)
+            .catch(e => console.error('Erro ao limpar histórico duplicado:', e));
 
         // Also cache to localStorage
         try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch(e) {}
@@ -281,7 +339,7 @@ async function loadState() {
                 const s = JSON.parse(saved);
                 state.players = s.players || [];
                 state.currentTournament = s.currentTournament || null;
-                state.history = s.history || [];
+                state.history = normalizeHistoryEntries(s.history || []);
             }
         } catch (e2) { console.error('Fallback localStorage falhou:', e2); }
     }
@@ -327,8 +385,13 @@ async function migrateLocalStorageToFirestore() {
             await db.collection('appData').doc('tournament').set({ data: data.currentTournament });
         }
         if (data.history?.length) {
-            for (const h of data.history) {
-                await db.collection('history').add(h);
+            const uniqueHistory = normalizeHistoryEntries(data.history);
+            for (const h of uniqueHistory) {
+                const docId = getHistoryEntryKey(h) || uid();
+                await db.collection('history').doc(docId).set({
+                    ...h,
+                    id: h.id || docId
+                }, { merge: true });
             }
         }
         showToast('📦 Dados locais migrados para a nuvem!');
