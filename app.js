@@ -208,6 +208,28 @@ function getHistoryEntryKey(entry) {
     return entry?.id || entry?._firestoreId || null;
 }
 
+function getHistoryEntryFingerprint(entry) {
+    const teams = (entry?.teams || [])
+        .map(team => `${team.id || ''}:${team.name || ''}:${team.color || ''}`)
+        .sort()
+        .join('|');
+    const matches = (entry?.matches || [])
+        .map(match => `${match.round || ''}:${match.homeTeamId || ''}:${match.awayTeamId || ''}:${match.homeScore ?? ''}:${match.awayScore ?? ''}:${match.status || ''}`)
+        .join('|');
+
+    return [
+        entry?.createdAt || '',
+        entry?.finishedAt || '',
+        entry?.status || '',
+        teams,
+        matches
+    ].join('::');
+}
+
+function getHistoryDeduplicationKey(entry) {
+    return entry?.id || getHistoryEntryFingerprint(entry) || entry?._firestoreId || null;
+}
+
 function getHistoryEntryTimestamp(entry) {
     const raw = entry?.finishedAt || entry?.createdAt || null;
     if (!raw) return 0;
@@ -219,7 +241,7 @@ function normalizeHistoryEntries(entries = []) {
     const byKey = new Map();
 
     entries.forEach(entry => {
-        const key = getHistoryEntryKey(entry);
+        const key = getHistoryDeduplicationKey(entry);
         if (!key) return;
 
         const existing = byKey.get(key);
@@ -232,31 +254,98 @@ function normalizeHistoryEntries(entries = []) {
 }
 
 async function cleanupDuplicateHistoryDocs(historyDocs = []) {
+    if (!currentUser || !(isAdmin() || isCaptain())) return { deletedCount: 0, normalizedCount: 0 };
+
     const docsByKey = new Map();
 
     historyDocs.forEach(doc => {
         const data = doc.data();
-        const key = data?.id || doc.id;
+        const key = getHistoryDeduplicationKey({ _firestoreId: doc.id, ...data });
         if (!docsByKey.has(key)) docsByKey.set(key, []);
         docsByKey.get(key).push({ doc, data });
     });
 
     const deleteOps = [];
-    docsByKey.forEach(group => {
-        if (group.length <= 1) return;
+    const upsertOps = [];
+    let deletedCount = 0;
+    let normalizedCount = 0;
 
+    docsByKey.forEach(group => {
         group.sort((a, b) => {
-            if (a.doc.id === (a.data?.id || a.doc.id)) return -1;
-            if (b.doc.id === (b.data?.id || b.doc.id)) return 1;
+            const aPreferredId = a.data?.id || a.doc.id;
+            const bPreferredId = b.data?.id || b.doc.id;
+            if (a.doc.id === aPreferredId) return -1;
+            if (b.doc.id === bPreferredId) return 1;
             return getHistoryEntryTimestamp(b.data) - getHistoryEntryTimestamp(a.data);
         });
 
-        group.slice(1).forEach(({ doc }) => deleteOps.push(doc.ref.delete()));
+        const canonical = group[0];
+        const canonicalDocId = canonical.data?.id || canonical.doc.id;
+        const canonicalPayload = {
+            ...canonical.data,
+            id: canonical.data?.id || canonicalDocId
+        };
+
+        if (canonical.doc.id !== canonicalDocId) {
+            upsertOps.push(db.collection('history').doc(canonicalDocId).set(canonicalPayload, { merge: true }));
+            deleteOps.push(canonical.doc.ref.delete());
+            deletedCount++;
+            normalizedCount++;
+        }
+
+        group.slice(1).forEach(({ doc }) => {
+            if (doc.id === canonicalDocId) return;
+            deleteOps.push(doc.ref.delete());
+            deletedCount++;
+        });
     });
+
+    if (upsertOps.length > 0) {
+        await Promise.all(upsertOps);
+    }
 
     if (deleteOps.length > 0) {
         await Promise.all(deleteOps);
     }
+
+    return { deletedCount, normalizedCount };
+}
+
+async function adminCleanupHistoryDuplicates() {
+    if (!isAdmin()) { showToast('Sem permissão!'); return; }
+
+    try {
+        showToast('⏳ Limpando histórico duplicado...');
+        const snapshot = await db.collection('history').get();
+        const { deletedCount } = await cleanupDuplicateHistoryDocs(snapshot.docs);
+        await loadState();
+        renderCurrentView();
+        renderAdmin();
+
+        if (deletedCount > 0) {
+            showToast(`✅ ${deletedCount} registro${deletedCount > 1 ? 's duplicados removidos' : ' duplicado removido'}.`);
+        } else {
+            showToast('✅ Nenhum histórico duplicado encontrado.');
+        }
+    } catch (e) {
+        console.error('Erro ao limpar histórico duplicado:', e);
+        showToast('❌ Não foi possível limpar o histórico duplicado.');
+    }
+}
+
+function confirmAdminCleanupHistoryDuplicates() {
+    if (!isAdmin()) { showToast('Sem permissão!'); return; }
+
+    showModal(`
+        <div class="modal-title">🧹 Limpar Histórico Duplicado?</div>
+        <p style="text-align:center;color:var(--text-secondary);margin-bottom:16px;">
+            Esta ação remove do Firestore os torneios históricos duplicados e mantém apenas uma versão de cada torneio.
+        </p>
+        <div class="modal-actions">
+            <button class="btn btn-secondary" onclick="hideModal()">Cancelar</button>
+            <button class="btn btn-primary" onclick="hideModal();adminCleanupHistoryDuplicates()">Limpar Agora</button>
+        </div>
+    `);
 }
 
 // ───── PERSISTENCE (FIRESTORE + localStorage fallback) ─────
@@ -3084,6 +3173,14 @@ async function renderAdmin() {
                 </select>
             </div>
             <button class="btn btn-primary btn-block" onclick="adminAddUser()">Criar Usuário</button>
+        </div>
+
+        <div class="admin-form" style="margin-top:12px;">
+            <h3 style="margin-bottom:12px;font-size:0.95rem;">🧹 Manutenção do Histórico</h3>
+            <div class="notice notice-info" style="margin-bottom:10px;font-size:0.78rem;">
+                Remove documentos duplicados do histórico de torneios no Firestore sem afetar os dados válidos.
+            </div>
+            <button class="btn btn-secondary btn-block" onclick="confirmAdminCleanupHistoryDuplicates()">Limpar Histórico Duplicado</button>
         </div>
 
         <h3 style="margin-bottom:10px;font-size:0.95rem;">👥 Usuários Cadastrados (${users.length})</h3>
