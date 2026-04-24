@@ -249,6 +249,9 @@ async function loadState() {
                     if (!Number.isFinite(m.timerRemaining) || m.timerRemaining < 0) m.timerRemaining = m.timerDuration;
                     if (m.timerRunning === undefined) m.timerRunning = false;
                     if (m.timerStartedAt === undefined) m.timerStartedAt = null;
+                    if (!Number.isFinite(m.timerBaseRemaining) || m.timerBaseRemaining < 0) {
+                        m.timerBaseRemaining = m.timerRunning ? m.timerRemaining : null;
+                    }
                 });
             }
             // migration: ensure designatedGoalkeeperId field in teams
@@ -550,6 +553,109 @@ function resetTournament() {
     renderTournament();
 }
 
+function buildTournamentHistoryEntry(tournament) {
+    const standings = calculateStandingsForTournament(tournament);
+    const champion = standings.length > 0 ? standings[0] : null;
+    const existingEntry = state.history.find(h => h.id === tournament.id && h.status === 'finished');
+
+    const playerSnapshot = {};
+    state.players.forEach(player => { playerSnapshot[player.id] = player.name; });
+    tournament.teams.forEach(team => {
+        team.players.forEach(playerId => {
+            if (!playerSnapshot[playerId]) playerSnapshot[playerId] = getPlayerName(playerId);
+        });
+    });
+
+    return {
+        ...JSON.parse(JSON.stringify(tournament)),
+        finishedAt: existingEntry?.finishedAt || tournament.finishedAt || new Date().toISOString(),
+        champion: champion ? {
+            teamId: champion.teamId,
+            teamName: champion.name,
+            teamColor: champion.color,
+            pts: champion.pts,
+            won: champion.won,
+            drawn: champion.drawn,
+            lost: champion.lost,
+            gf: champion.gf,
+            ga: champion.ga,
+            gd: champion.gd,
+            playerIds: tournament.teams.find(team => team.id === champion.teamId)?.players || []
+        } : null,
+        playerSnapshot
+    };
+}
+
+function syncTournamentHistory(tournament) {
+    if (!tournament?.id) return;
+
+    const historyEntry = buildTournamentHistoryEntry(tournament);
+    state.history = state.history.filter(h => h.id !== tournament.id);
+    state.history.push(historyEntry);
+
+    db.collection('history').doc(tournament.id).set(historyEntry)
+        .catch(e => console.error('Erro ao salvar histórico no Firestore:', e));
+
+    db.collection('history').where('id', '==', tournament.id).get()
+        .then(snapshot => Promise.all(
+            snapshot.docs
+                .filter(doc => doc.id !== tournament.id)
+                .map(doc => doc.ref.delete())
+        ))
+        .catch(e => console.error('Erro ao limpar histórico duplicado:', e));
+}
+
+function removeTournamentHistory(tournamentId) {
+    if (!tournamentId) return;
+
+    state.history = state.history.filter(h => h.id !== tournamentId);
+
+    db.collection('history').doc(tournamentId).delete()
+        .catch(e => {
+            if (e?.code !== 'not-found') {
+                console.error('Erro ao excluir histórico do torneio:', e);
+            }
+        });
+
+    db.collection('history').where('id', '==', tournamentId).get()
+        .then(snapshot => Promise.all(snapshot.docs.map(doc => doc.ref.delete())))
+        .catch(e => console.error('Erro ao excluir históricos antigos do torneio:', e));
+}
+
+function deleteCurrentTournament() {
+    if (!canResetTournament()) { showToast('Sem permissão!'); return; }
+    const tournament = state.currentTournament;
+    if (!tournament) return;
+
+    if (matchTimerInterval) {
+        clearInterval(matchTimerInterval);
+        matchTimerInterval = null;
+    }
+
+    removeTournamentHistory(tournament.id);
+    state.currentTournament = null;
+    saveState();
+    renderCurrentView();
+    showToast('🗑️ Torneio excluído.');
+}
+
+function confirmDeleteTournament() {
+    const tournament = state.currentTournament;
+    if (!tournament) return;
+
+    const hasFinishedMatches = tournament.matches.some(match => match.status === 'finished');
+    showModal(`
+        <div class="modal-title">🗑️ Excluir Torneio?</div>
+        <p style="text-align:center;color:var(--text-secondary);margin-bottom:16px;">
+            Esta ação remove o torneio atual permanentemente.${hasFinishedMatches ? ' O histórico e os rankings vinculados a ele também serão atualizados.' : ''}
+        </p>
+        <div class="modal-actions">
+            <button class="btn btn-secondary" onclick="hideModal()">Cancelar</button>
+            <button class="btn btn-danger" onclick="hideModal();deleteCurrentTournament()">Excluir</button>
+        </div>
+    `);
+}
+
 function setTeamName(teamId, name) {
     if (!canChangeTeams()) { showToast('Sem permissão!'); return; }
     const team = getTeam(teamId);
@@ -698,6 +804,9 @@ function renderTournament() {
             <div class="divider"></div>
             <button class="btn btn-danger btn-block btn-sm" onclick="confirmResetTournament()">
                 Encerrar Torneio
+            </button>
+            <button class="btn btn-secondary btn-block btn-sm" onclick="confirmDeleteTournament()" style="margin-top:8px;">
+                Excluir Torneio
             </button>` : ''}
         `;
     }
@@ -848,6 +957,9 @@ function renderTournamentSetup(container) {
         <div class="divider"></div>
         <button class="btn btn-danger btn-block btn-sm" onclick="confirmResetTournament()">
             Cancelar Torneio
+        </button>
+        <button class="btn btn-secondary btn-block btn-sm" onclick="confirmDeleteTournament()" style="margin-top:8px;">
+            Excluir Torneio
         </button>` : ''}
     `;
 }
@@ -893,7 +1005,8 @@ function selectMatch1Teams(homeId, awayId) {
         timerDuration: durationSeconds,
         timerRemaining: durationSeconds,
         timerRunning: false,
-        timerStartedAt: null
+        timerStartedAt: null,
+        timerBaseRemaining: null
     }];
     t.status = 'in_progress';
     saveState();
@@ -990,28 +1103,46 @@ function resumeMatchTimerIfNeeded() {
     if (!activeMatch) return;
     
     const matchIdx = t.matches.indexOf(activeMatch);
-    
-    // Calculate elapsed time since timer was paused (if any)
-    if (activeMatch.timerStartedAt) {
-        const elapsed = Math.floor((Date.now() - activeMatch.timerStartedAt) / 1000);
-        activeMatch.timerRemaining = Math.max(0, activeMatch.timerRemaining - elapsed);
-    }
-    
-    // Resume timer
-    startMatchTimer(matchIdx);
+
+    // Resume ticking using persisted wall-clock fields.
+    startMatchTimer(matchIdx, true);
 }
 
-function startMatchTimer(matchIdx) {
+function getMatchClockRemaining(match) {
+    const fallback = Number.isFinite(match.timerRemaining) ? match.timerRemaining : (match.timerDuration || 0);
+    const base = Number.isFinite(match.timerBaseRemaining) ? match.timerBaseRemaining : fallback;
+
+    if (!match.timerRunning || !match.timerStartedAt) {
+        return Math.max(0, base);
+    }
+
+    const elapsed = Math.floor((Date.now() - match.timerStartedAt) / 1000);
+    return Math.max(0, base - elapsed);
+}
+
+function startMatchTimer(matchIdx, keepExistingClock = false) {
     const t = state.currentTournament;
     const match = t.matches[matchIdx];
     if (!match || match.status !== 'in_progress') return;
 
-    match.timerRunning = true;
-    match.timerStartedAt = Date.now();
+    const fallback = Number.isFinite(match.timerRemaining) ? match.timerRemaining : (match.timerDuration || getTournamentMatchDurationSeconds(t));
+
+    if (!keepExistingClock || !match.timerRunning || !match.timerStartedAt) {
+        match.timerRunning = true;
+        match.timerBaseRemaining = Number.isFinite(match.timerBaseRemaining) ? match.timerBaseRemaining : fallback;
+        match.timerStartedAt = Date.now();
+    } else {
+        if (!Number.isFinite(match.timerBaseRemaining)) {
+            match.timerBaseRemaining = fallback;
+        }
+    }
+
     saveState();
 
     // Clear any existing interval
     if (matchTimerInterval) clearInterval(matchTimerInterval);
+
+    updateMatchTimer(matchIdx);
 
     // Start interval
     matchTimerInterval = setInterval(() => {
@@ -1026,7 +1157,10 @@ function pauseMatchTimer(matchIdx) {
     const match = t.matches[matchIdx];
     if (!match || match.status !== 'in_progress') return;
 
+    match.timerRemaining = getMatchClockRemaining(match);
     match.timerRunning = false;
+    match.timerStartedAt = null;
+    match.timerBaseRemaining = null;
     
     if (matchTimerInterval) {
         clearInterval(matchTimerInterval);
@@ -1042,31 +1176,40 @@ function updateMatchTimer(matchIdx) {
     const match = t.matches[matchIdx];
     if (!match || match.status !== 'in_progress' || !match.timerRunning) return;
 
-    if (match.timerRemaining > 0) {
-        match.timerRemaining--;
+    const remaining = getMatchClockRemaining(match);
+    if (remaining !== match.timerRemaining) {
+        match.timerRemaining = remaining;
         saveState();
+    }
 
-        // Update UI without full re-render
-        const timerDisplay = document.getElementById('match-timer-display');
-        if (timerDisplay) {
-            const minutes = Math.floor(match.timerRemaining / 60);
-            const seconds = match.timerRemaining % 60;
-            timerDisplay.textContent = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
-            
-            // Warning colors
-            if (match.timerRemaining <= 60) {
-                timerDisplay.style.color = 'var(--danger)';
-            } else if (match.timerRemaining <= 180) {
-                timerDisplay.style.color = 'var(--warning)';
-            }
+    // Update UI without full re-render
+    const timerDisplay = document.getElementById('match-timer-display');
+    if (timerDisplay) {
+        const minutes = Math.floor(match.timerRemaining / 60);
+        const seconds = match.timerRemaining % 60;
+        timerDisplay.textContent = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+        
+        // Warning colors
+        if (match.timerRemaining <= 60) {
+            timerDisplay.style.color = 'var(--danger)';
+        } else if (match.timerRemaining <= 180) {
+            timerDisplay.style.color = 'var(--warning)';
         }
+    }
 
-        if (match.timerRemaining === 0) {
-            // Timer finished - play whistle sound
-            playWhistleSound();
-            pauseMatchTimer(matchIdx);
-            showToast('⏱️ Tempo esgotado!');
+    if (match.timerRemaining === 0) {
+        // Timer finished - stop only because it hit zero.
+        match.timerRunning = false;
+        match.timerStartedAt = null;
+        match.timerBaseRemaining = null;
+        if (matchTimerInterval) {
+            clearInterval(matchTimerInterval);
+            matchTimerInterval = null;
         }
+        saveState();
+        renderMatches();
+        playWhistleSound();
+        showToast('⏱️ Tempo esgotado!');
     }
 }
 
@@ -1077,6 +1220,8 @@ function resetMatchTimer(matchIdx) {
 
     match.timerRemaining = match.timerDuration || getTournamentMatchDurationSeconds(t);
     match.timerRunning = false;
+    match.timerStartedAt = null;
+    match.timerBaseRemaining = null;
     
     if (matchTimerInterval) {
         clearInterval(matchTimerInterval);
@@ -1085,6 +1230,21 @@ function resetMatchTimer(matchIdx) {
 
     saveState();
     renderMatches();
+}
+
+function resetMatchForReplay(match, status = 'pending') {
+    const durationSeconds = getTournamentMatchDurationSeconds(state.currentTournament);
+    match.homeScore = 0;
+    match.awayScore = 0;
+    match.homeGoalkeeper = null;
+    match.awayGoalkeeper = null;
+    match.goals = [];
+    match.status = status;
+    match.timerDuration = durationSeconds;
+    match.timerRemaining = durationSeconds;
+    match.timerRunning = false;
+    match.timerStartedAt = null;
+    match.timerBaseRemaining = null;
 }
 
 function playWhistleSound() {
@@ -1284,13 +1444,90 @@ function confirmEndMatch(matchIdx) {
             <small style="color:var(--text-muted);">Jogo ${match.round} de ${TOTAL_ROUNDS}</small>
         </div>
         <p style="text-align:center;color:var(--text-secondary);font-size:0.85rem;">
-            Após encerrar, não será possível editar o placar.
+            Após encerrar, somente o Admin Geral poderá reabrir esta partida para editar o placar.
         </p>
         <div class="modal-actions">
             <button class="btn btn-secondary" onclick="hideModal()">Cancelar</button>
             <button class="btn btn-primary" onclick="hideModal();endMatch(${matchIdx})">Confirmar e Encerrar</button>
         </div>
     `);
+}
+
+function confirmReopenFinishedMatch(matchIdx) {
+    if (!canEditFinishedMatches()) { showToast('Sem permissão!'); return; }
+
+    const tournament = state.currentTournament;
+    const match = tournament?.matches?.[matchIdx];
+    if (!match || match.status !== 'finished') return;
+
+    const futureMatchesCount = Math.max(0, tournament.matches.length - matchIdx - 1);
+    const description = matchIdx === 0
+        ? `O Jogo 1 será reaberto e os jogos seguintes serão reiniciados para refazer o chaveamento do torneio.`
+        : futureMatchesCount > 0
+            ? `O Jogo ${match.round} será reaberto e ${futureMatchesCount === 1 ? 'o jogo seguinte será reiniciado' : `os ${futureMatchesCount} jogos seguintes serão reiniciados`}.`
+            : `O Jogo ${match.round} será reaberto para edição do placar.`;
+
+    showModal(`
+        <div class="modal-title">✏️ Alterar Resultado?</div>
+        <p style="text-align:center;color:var(--text-secondary);margin-bottom:16px;">
+            ${description}
+        </p>
+        <p style="text-align:center;color:var(--text-muted);font-size:0.82rem;margin-bottom:16px;">
+            Depois disso, ajuste gols e goleiros normalmente e encerre a partida novamente.
+        </p>
+        <div class="modal-actions">
+            <button class="btn btn-secondary" onclick="hideModal()">Cancelar</button>
+            <button class="btn btn-primary" onclick="hideModal();reopenFinishedMatch(${matchIdx})">Confirmar</button>
+        </div>
+    `);
+}
+
+function reopenFinishedMatch(matchIdx) {
+    if (!canEditFinishedMatches()) { showToast('Sem permissão!'); return; }
+
+    const tournament = state.currentTournament;
+    const match = tournament?.matches?.[matchIdx];
+    if (!match || match.status !== 'finished') return;
+
+    if (matchTimerInterval) {
+        clearInterval(matchTimerInterval);
+        matchTimerInterval = null;
+    }
+
+    if (matchIdx === 0) {
+        const reopenedMatch = JSON.parse(JSON.stringify(match));
+        reopenedMatch.status = 'in_progress';
+        reopenedMatch.timerDuration = reopenedMatch.timerDuration || getTournamentMatchDurationSeconds(tournament);
+        reopenedMatch.timerRemaining = reopenedMatch.timerDuration;
+        reopenedMatch.timerRunning = false;
+        reopenedMatch.timerStartedAt = null;
+
+        tournament.matches = [reopenedMatch];
+        tournament.match1Selection = { home: reopenedMatch.homeTeamId, away: reopenedMatch.awayTeamId };
+        tournament.stayTeam = null;
+        tournament.leavingTeam = null;
+        tournament.restingTeam = null;
+        tournament.scheduleGenerated = false;
+    } else {
+        tournament.matches.forEach((item, idx) => {
+            if (idx < matchIdx) return;
+            if (idx === matchIdx) {
+                item.status = 'in_progress';
+                item.timerDuration = item.timerDuration || getTournamentMatchDurationSeconds(tournament);
+                item.timerRemaining = item.timerDuration;
+                item.timerRunning = false;
+                item.timerStartedAt = null;
+                return;
+            }
+            resetMatchForReplay(item, 'pending');
+        });
+    }
+
+    tournament.status = 'in_progress';
+    removeTournamentHistory(tournament.id);
+    saveState();
+    switchView('matches');
+    showToast('✏️ Partida reaberta. Ajuste o resultado e encerre novamente.');
 }
 
 function endMatch(matchIdx) {
@@ -1331,7 +1568,7 @@ function finalizeMatch(matchIdx) {
     if (t.matches.every(m => m.status === 'finished')) {
         t.status = 'finished';
         // Save finished tournament to history with champion info
-        saveTournamentToHistory(t);
+        syncTournamentHistory(t);
         saveState();
         renderMatches();
         setTimeout(() => showChampionScreen(), 800);
@@ -1348,45 +1585,7 @@ function finalizeMatch(matchIdx) {
  * including champion info and player name snapshots.
  */
 function saveTournamentToHistory(tournament) {
-    const standings = calculateStandingsForTournament(tournament);
-    const champion = standings.length > 0 ? standings[0] : null;
-
-    // Snapshot player names at this point in time
-    const playerSnapshot = {};
-    state.players.forEach(p => { playerSnapshot[p.id] = p.name; });
-    // Also include any player referenced in the tournament but maybe already deleted
-    tournament.teams.forEach(team => {
-        team.players.forEach(pid => {
-            if (!playerSnapshot[pid]) playerSnapshot[pid] = getPlayerName(pid);
-        });
-    });
-
-    const historyEntry = {
-        ...JSON.parse(JSON.stringify(tournament)),
-        finishedAt: new Date().toISOString(),
-        champion: champion ? {
-            teamId: champion.teamId,
-            teamName: champion.name,
-            teamColor: champion.color,
-            pts: champion.pts,
-            won: champion.won,
-            drawn: champion.drawn,
-            lost: champion.lost,
-            gf: champion.gf,
-            ga: champion.ga,
-            gd: champion.gd,
-            playerIds: tournament.teams.find(t => t.id === champion.teamId)?.players || []
-        } : null,
-        playerSnapshot
-    };
-
-    // Remove duplicates (in case saved twice)
-    state.history = state.history.filter(h => h.id !== tournament.id);
-    state.history.push(historyEntry);
-
-    // Also save to Firestore history collection
-    db.collection('history').add(historyEntry)
-        .catch(e => console.error('Erro ao salvar histórico no Firestore:', e));
+    syncTournamentHistory(tournament);
 }
 
 // ── Schedule generation after match 1 result ──
@@ -1426,7 +1625,8 @@ function handleMatch1Result(stayTeamId, leaveTeamId) {
             timerDuration: durationSeconds,
             timerRemaining: durationSeconds,
             timerRunning: false,
-            timerStartedAt: null
+            timerStartedAt: null,
+            timerBaseRemaining: null
         });
     }
 
@@ -1761,6 +1961,13 @@ function renderMatchList() {
                         ${awayTeam.imgRight ? `<img src="${awayTeam.imgRight}" alt="" class="mh-team-img">` : `<span class="score-team-color" style="background:${awayTeam.color};display:inline-block;vertical-align:middle;margin-left:4px;"></span>`}
                     </span>
                 </div>
+                ${isFinished && canEditFinishedMatches() ? `
+                    <div style="margin-top:8px;display:flex;justify-content:flex-end;">
+                        <button class="btn btn-secondary btn-sm" onclick="confirmReopenFinishedMatch(${idx})">
+                            Alterar Resultado
+                        </button>
+                    </div>
+                ` : ''}
             </div>`;
     });
 
