@@ -1,5 +1,5 @@
-// ═══════════════════════════════════════════════════════
-//  AlienígenasFC — Firebase Configuration
+﻿// ═══════════════════════════════════════════════════════
+//  Aligenígenas F.C — Firebase Configuration
 // ═══════════════════════════════════════════════════════
 //
 //  ╔══════════════════════════════════════════════════╗
@@ -8,9 +8,9 @@
 //  ║                                                  ║
 //  ║  1. Acesse: https://console.firebase.google.com  ║
 //  ║  2. Clique em "Adicionar projeto"                ║
-//  ║  3. Dê o nome "AlienigenasFC" e crie             ║
+//  ║  3. Dê o nome "Aligenígenas F.C" e crie             ║
 //  ║  4. No painel, clique no ícone </> (Web)         ║
-//  ║  5. Registre o app com nome "AlienigenasFC"      ║
+//  ║  5. Registre o app com nome "Aligenígenas F.C"      ║
 //  ║  6. Copie o objeto firebaseConfig gerado         ║
 //  ║  7. Cole aqui embaixo substituindo os valores    ║
 //  ║                                                  ║

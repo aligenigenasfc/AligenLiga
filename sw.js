@@ -1,5 +1,5 @@
-// ═══════════════════════════════════════════════════════
-//  AlienígenasFC — Service Worker (PWA offline support)
+﻿// ═══════════════════════════════════════════════════════
+//  Aligenígenas F.C — Service Worker (PWA offline support)
 // ═══════════════════════════════════════════════════════
 
 const CACHE_NAME = 'alienigenasfc-v2';
