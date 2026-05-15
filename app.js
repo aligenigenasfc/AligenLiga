@@ -1122,6 +1122,16 @@ function selectMatch1Teams(homeId, awayId) {
 
 // ── Goal management ──
 
+function toggleGoalExtraList(listId, buttonId, showLabel, hideLabel) {
+    const list = document.getElementById(listId);
+    const button = document.getElementById(buttonId);
+    if (!list || !button) return;
+
+    const isHidden = list.style.display === 'none' || !list.style.display;
+    list.style.display = isHidden ? 'block' : 'none';
+    button.textContent = isHidden ? hideLabel : showLabel;
+}
+
 function addGoalToMatch(teamId) {
     if (!canScoreGoals()) { showToast('Sem permissão!'); return; }
     const t = state.currentTournament;
@@ -1133,8 +1143,12 @@ function addGoalToMatch(teamId) {
     const team = getTeam(teamId);
     if (!team) return;
 
+    const opponentTeamId = teamId === match.homeTeamId ? match.awayTeamId : match.homeTeamId;
+    const opponentTeam = getTeam(opponentTeamId);
+
     // Get goalkeeper for this team in this match
     const goalkeeperIdForTeam = teamId === match.homeTeamId ? match.homeGoalkeeper : match.awayGoalkeeper;
+    const opponentGoalkeeperId = opponentTeamId === match.homeTeamId ? match.homeGoalkeeper : match.awayGoalkeeper;
 
     // Build player list with unique IDs to avoid duplicates
     const playerSet = new Set(team.players);
@@ -1142,14 +1156,46 @@ function addGoalToMatch(teamId) {
         playerSet.add(goalkeeperIdForTeam);
     }
 
+    const opponentPlayerSet = new Set((opponentTeam && opponentTeam.players) ? opponentTeam.players : []);
+    if (opponentGoalkeeperId && !opponentPlayerSet.has(opponentGoalkeeperId)) {
+        opponentPlayerSet.add(opponentGoalkeeperId);
+    }
+
+    const substituteSet = new Set();
+    t.teams.forEach(tournamentTeam => {
+        if (tournamentTeam.id === teamId) return;
+        (tournamentTeam.players || []).forEach(pid => substituteSet.add(pid));
+    });
+
     const playersList = Array.from(playerSet).map(pid => {
         const isGoalkeeper = pid === goalkeeperIdForTeam;
         const playerName = getPlayerName(pid);
         return `
-        <li onclick="recordGoal('${teamId}', '${pid}')" style="${isGoalkeeper ? 'background:var(--bg-input);' : ''}">
+        <li onclick="recordGoalWithContext('${teamId}', '${pid}', false, '${teamId}')" style="${isGoalkeeper ? 'background:var(--bg-input);' : ''}">
             ${esc(playerName)} ${isGoalkeeper ? '🧤' : ''}
         </li>
     `}).join('');
+
+    const ownGoalList = Array.from(opponentPlayerSet).map(pid => {
+        const isGoalkeeper = pid === opponentGoalkeeperId;
+        return `
+        <li onclick="recordGoalWithContext('${teamId}', '${pid}', true, '${opponentTeamId}')" style="${isGoalkeeper ? 'background:var(--bg-input);' : ''}">
+            ${esc(getPlayerName(pid))} ${isGoalkeeper ? '🧤' : ''}
+        </li>
+    `;
+    }).join('');
+
+    const substituteList = Array.from(substituteSet)
+        .filter(pid => !playerSet.has(pid))
+        .map(pid => {
+            const sourceTeam = t.teams.find(tm => (tm.players || []).includes(pid));
+            const sourceLabel = sourceTeam ? ` - ${esc(sourceTeam.name)}` : '';
+            return `
+        <li onclick="recordGoalWithContext('${teamId}', '${pid}', false, '${sourceTeam ? sourceTeam.id : ''}')">
+            ${esc(getPlayerName(pid))}${sourceLabel}
+        </li>
+    `;
+        }).join('');
 
     showModal(`
         <div class="modal-title">⚽ Quem marcou o gol?</div>
@@ -1160,26 +1206,56 @@ function addGoalToMatch(teamId) {
             </span>
         </div>
         <ul class="modal-player-list">${playersList}</ul>
+        ${ownGoalList ? `
+        <div style="margin-top:8px;">
+            <button id="btn-toggle-own-goal" class="btn btn-secondary btn-sm" style="width:100%;" onclick="toggleGoalExtraList('list-own-goal', 'btn-toggle-own-goal', 'Gol contra (time adversário)', 'Ocultar gol contra')">Gol contra (time adversário)</button>
+            <ul id="list-own-goal" class="modal-player-list" style="display:none;margin-top:8px;">${ownGoalList}</ul>
+        </div>
+        ` : ''}
+        ${substituteList ? `
+        <div style="margin-top:8px;">
+            <button id="btn-toggle-substitute-goal" class="btn btn-secondary btn-sm" style="width:100%;" onclick="toggleGoalExtraList('list-substitute-goal', 'btn-toggle-substitute-goal', 'Jogador substituto (outros times)', 'Ocultar substitutos')">Jogador substituto (outros times)</button>
+            <ul id="list-substitute-goal" class="modal-player-list" style="display:none;margin-top:8px;">${substituteList}</ul>
+        </div>
+        ` : ''}
         <div class="modal-actions">
             <button class="btn btn-secondary" onclick="hideModal()">Cancelar</button>
         </div>
     `);
 }
 
-function recordGoal(teamId, playerId) {
+function recordGoalWithContext(teamId, playerId, isOwnGoal = false, sourceTeamId = '') {
+    recordGoal(teamId, playerId, { isOwnGoal, sourceTeamId });
+}
+
+function recordGoal(teamId, playerId, options = {}) {
     const t = state.currentTournament;
     const idx = getCurrentMatchIndex();
     if (idx < 0) return;
     const match = t.matches[idx];
 
-    match.goals.push({ teamId, playerId });
+    const isOwnGoal = !!options.isOwnGoal;
+    const sourceTeamId = options.sourceTeamId || null;
+
+    match.goals.push({ teamId, playerId, isOwnGoal, sourceTeamId });
     if (teamId === match.homeTeamId) match.homeScore++;
     else match.awayScore++;
 
     saveState();
     hideModal();
     renderMatches();
-    showToast(`⚽ GOL! ${getPlayerName(playerId)}`);
+
+    const scoringTeam = getTeam(teamId);
+    const sourceTeam = sourceTeamId ? getTeam(sourceTeamId) : null;
+    if (isOwnGoal) {
+        showToast(`⚽ Gol contra! ${getPlayerName(playerId)} marcou para ${scoringTeam ? scoringTeam.name : 'o adversário'}`);
+        return;
+    }
+
+    const substituteSuffix = sourceTeam && sourceTeam.id !== teamId
+        ? ` (substituto de ${sourceTeam.name})`
+        : '';
+    showToast(`⚽ GOL! ${getPlayerName(playerId)}${substituteSuffix}`);
 }
 
 function removeGoal(matchIdx, goalIdx) {
@@ -1962,11 +2038,16 @@ function renderActiveMatch(match, idx) {
             else runningAway++;
             const scoreStr = `${runningHome}-${runningAway}`;
             const team = getTeam(goal.teamId);
+            const sourceTeam = goal.sourceTeamId ? getTeam(goal.sourceTeamId) : null;
+            const ownGoalTag = goal.isOwnGoal ? ' (contra)' : '';
+            const substituteTag = !goal.isOwnGoal && sourceTeam && sourceTeam.id !== goal.teamId
+                ? ` - substituto de ${esc(sourceTeam.name)}`
+                : '';
             html += `
                 <div class="goal-item">
                     <span class="goal-icon">⚽</span>
                     <span class="goal-score">${scoreStr}</span>
-                    <span class="goal-player">${esc(getPlayerName(goal.playerId))}</span>
+                    <span class="goal-player">${esc(getPlayerName(goal.playerId))}${ownGoalTag}${substituteTag}</span>
                     <span class="goal-team" style="color:${team.color}">${esc(team.name)}</span>
                     ${canScoreGoals() ? `<button class="btn-remove-goal" onclick="removeGoal(${idx}, ${gIdx})" title="Remover gol">✕</button>` : ''}
                 </div>`;
